@@ -12,6 +12,13 @@
     <true/>
     <key>KeepAlive</key>
     <false/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JARVIS_RUN_SCRIPT</key>
+        <string>__JARVIS_PROJECT_ROOT__/run.py</string>
+        <key>PYTHONPATH</key>
+        <string>__JARVIS_APP_RESOURCES__:__JARVIS_VENV_SITE_PACKAGES__</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>__JARVIS_PROJECT_ROOT__/logs/launchd.out.log</string>
     <key>StandardErrorPath</key>

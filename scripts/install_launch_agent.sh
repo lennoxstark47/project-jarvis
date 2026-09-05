@@ -8,6 +8,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_BINARY="$PROJECT_ROOT/dist/Jarvis.app/Contents/MacOS/Jarvis"
+APP_RESOURCES="$PROJECT_ROOT/dist/Jarvis.app/Contents/Resources"
 PLIST_LABEL="com.jarvis.agent"
 PLIST_DEST="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 
@@ -17,11 +18,20 @@ if [[ ! -x "$APP_BINARY" ]]; then
     exit 1
 fi
 
+# scripts/build_app.sh's Info.plist LSEnvironment only takes effect when
+# launched via `open`/Finder — launchd's own ProgramArguments exec bypasses
+# LaunchServices (and therefore Info.plist) entirely, so the same
+# JARVIS_RUN_SCRIPT/PYTHONPATH need to be set again here, directly in the
+# launchd job, or the app silently exits right after launch.
+VENV_SITE_PACKAGES="$(cd "$PROJECT_ROOT" && .venv/bin/python3 -c 'import site; print(site.getsitepackages()[0])')"
+
 mkdir -p "$HOME/Library/LaunchAgents"
 
 sed \
     -e "s|__JARVIS_APP_BINARY__|$APP_BINARY|g" \
     -e "s|__JARVIS_PROJECT_ROOT__|$PROJECT_ROOT|g" \
+    -e "s|__JARVIS_APP_RESOURCES__|$APP_RESOURCES|g" \
+    -e "s|__JARVIS_VENV_SITE_PACKAGES__|$VENV_SITE_PACKAGES|g" \
     "$PROJECT_ROOT/scripts/com.jarvis.agent.plist.template" > "$PLIST_DEST"
 
 # Unload any previous copy before loading the fresh one (bootout fails

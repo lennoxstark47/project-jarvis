@@ -8,26 +8,26 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus:** Phase 0 — code done and smoke-tested; waiting on you to build/install
-the real .app + launchd agent (see Phase 0 notes below) before this flips to ✅ and we
-move to Phase 1.
+**Current focus:** Phase 0 is ✅ Done. Ready to start Phase 1 — voice in → text out.
 
 **Status legend:** ☐ not started · 🔶 in progress · ✅ done · 🚫 blocked
 
 ---
 
 ## Phase 0 — Scaffolding & environment
-Status: 🔶 In progress (5/6 tasks done — one needs your hands-on step, see below)
+Status: ✅ Done
 
 - ✅ Project skeleton (Python, macOS) — `src/jarvis/`, `run.py`, `requirements.txt`, `.venv`
-- ✅ Menu-bar shell (`rumps`) — `src/jarvis/main.py`, ran for 4+s without crashing, logged correctly
+- ✅ Menu-bar shell (`rumps`) — `src/jarvis/main.py`
 - ✅ Background mic permission proven working — `check_microphone()` in `src/jarvis/permissions.py`
 - ✅ Background camera permission proven working — `check_camera()`, same file
-- ☐ Process survives reboot / runs at login (`launchd` agent) — **artifacts ready, not installed yet**
+- ✅ Process survives reboot / runs at login (`launchd` agent) — installed, verified via
+  `launchctl kickstart -k` (equivalent to a login relaunch): process starts, menu bar icon
+  appears, mic/camera both ready, with no manual launch step
 - ✅ On-disk layout: `config/`, `memory/`, `secrets/`, `logs/` — created, `.gitignore`'d appropriately
 - **Definition of done:** background process, menu bar icon, prints "mic: ready" / "camera: ready"
-  — met for the dev-mode process (`python3 run.py`); the packaged/login-item version is the one
-  remaining task below.
+  — confirmed **end-to-end and visually** (by you, in your actual menu bar), both launched via
+  `open` and launched by `launchd` directly.
 
 Notes (2026-09-05):
 - **Bug found & fixed:** `rumps.notification()` throws `RuntimeError` when run as a bare
@@ -51,33 +51,48 @@ Notes (2026-09-05):
   usage-description benefits, none of the freezing fragility. `setup.py` and
   `requirements-build.txt` deleted; `install_launch_agent.sh` and `main.py`/`run.py` comments
   updated to point at the new script instead.
-- **Verified so far (this session, automated — not yet an interactive login session):**
-  - Installed `rumps`/`sounddevice`/`opencv-python`/`numpy` into `.venv`.
-  - Confirmed real hardware exists (`FaceTime HD Camera`, `MacBook Air Microphone` via
-    `system_profiler`/`sounddevice.query_devices()`).
-  - Ran `python3 run.py` directly: got `mic: ready` / `camera: ready` in `logs/jarvis.log`,
-    process stayed alive in the rumps event loop until manually killed.
-  - Built `dist/Jarvis.app` via `scripts/build_app.sh`, launched it with `open` (as you actually
-    would): it correctly `exec`'d into `.venv/bin/python3 run.py` (confirmed via `ps`), logged
-    "Jarvis Phase 0 starting up." and "Running mic/camera permission check.", then **blocked** —
-    unlike every prior direct-script run, which returned ready/not-ready immediately. That
-    blocking is consistent with macOS actually presenting a permission dialog this time,
-    attributed to the "Jarvis" bundle identity rather than to Terminal/python3 — which is the
-    exact thing this whole task exists to prove. I have no way to click a system dialog from
-    here, so I killed the process rather than leave it hanging, and deleted `dist/`/`build/`
-    afterward (a fresh `scripts/build_app.sh` run recreates them identically).
-- **What's still open, and why I didn't do it automatically:** clicking through the permission
-  dialogs and eyeballing the menu bar both require you physically present, and installing the
-  launchd agent is a persistent change to your real login items I'm holding off on until the app
-  itself is confirmed working. **Your turn:**
-  1. `scripts/build_app.sh` (rebuilds `dist/Jarvis.app` — quick, no dependencies to reinstall).
-  2. `open dist/Jarvis.app` and click "Allow" on the mic/camera prompts — confirm they say
-     "Jarvis" wants to access..., not "Terminal" or "Python".
-  3. Confirm you see a "Jarvis [🎤📷]" item in the actual menu bar (click "Check Permissions"
-     there to re-run the check on demand).
-  4. `scripts/install_launch_agent.sh` to make it survive login/reboot
-     (`scripts/uninstall_launch_agent.sh` reverses it).
-  5. Tell me it's confirmed (or what broke) and I'll check this off and close out Phase 0.
+- **Bug found & fixed — the actual reason the menu bar icon didn't appear:** the first working
+  `build_app.sh` (shell script that `exec`'d `.venv/bin/python3`) got mic/camera TCC identity
+  right (dialogs correctly said "Jarvis", confirmed by you), but the menu bar icon never showed.
+  Root cause, found by streaming the unified system log (`log stream`) through a real `open
+  dist/Jarvis.app` launch: macOS's Control Center status-item service rejected every attempt with
+  `scene activation failed ... XPC error`, repeating once a second. `codesign -dv` on the running
+  binary showed `Info.plist=not bound` — Control Center requires the *actual running binary* to
+  have its Info.plist bound via code signature, which a shell script that `exec`s an external
+  interpreter can never provide (exec always swaps out the running image's identity; only TCC's
+  more lenient launch-context-based check tolerates that, not Control Center's scene service).
+  Fix: `scripts/build_app.sh` now **copies** the real interpreter binary into
+  `Contents/MacOS/Jarvis` (not a wrapper script) and ad-hoc re-signs the whole bundle
+  (`codesign --force --deep -s -`) so Info.plist gets bound to it. Confirmed via the same
+  `log stream` technique: zero scene-activation errors on the next launch, and you visually
+  confirmed the menu bar icon.
+- **Two more bugs found chasing that fix, each confirmed and fixed in turn:**
+  - Copying the raw interpreter binary loses its venv context (a venv's `bin/python3` normally
+    finds a `pyvenv.cfg` next to itself; a copy placed inside `Contents/MacOS/` has no access to
+    that) — surfaced as `ModuleNotFoundError: No module named 'rumps'`. Fixed by adding the venv's
+    real site-packages directory to `PYTHONPATH` in `build_app.sh` (queried via `.venv/bin/python3
+    -c 'import site; print(site.getsitepackages()[0])'`, not hardcoded).
+  - Since a bare double-click can't pass CLI args, `build_app.sh` auto-runs Jarvis via a
+    `sitecustomize.py` (auto-imported by Python's `site` module on every startup) triggered by a
+    `JARVIS_RUN_SCRIPT` env var set through Info.plist's `LSEnvironment`. That env var **only
+    applies when launched via `open`/Finder** — `launchd`'s own `ProgramArguments` exec bypasses
+    LaunchServices (and Info.plist) entirely, so the launchd-started process saw no
+    `JARVIS_RUN_SCRIPT`, sitecustomize no-op'd, and the interpreter just exited cleanly with no
+    error (`launchctl print` showed `last exit code = 0`, silently wrong). Fixed by also setting
+    `JARVIS_RUN_SCRIPT`/`PYTHONPATH` directly via `EnvironmentVariables` in the launchd plist
+    itself (`scripts/com.jarvis.agent.plist.template` + `install_launch_agent.sh`), independent of
+    Info.plist.
+- **Verified end-to-end, confirmed by you (not just by me):**
+  - `mic`/`camera` TCC dialogs correctly attributed to "Jarvis", Allow granted.
+  - Menu bar shows `Jarvis [🎤📷]` — both launched via `open` and launched directly by `launchd`
+    (`launchctl kickstart -k gui/<uid>/com.jarvis.agent`, simulating a login relaunch) — the
+    launchd agent is installed and `launchctl print` shows `state = running`.
+  - `logs/jarvis.log` shows the correct `mic: ready` / `camera: ready` sequence in both cases.
+- **Known dev-workflow friction, not a blocker, worth knowing for later phases:** ad-hoc code
+  signing (`-s -`) gives the bundle a fresh identity hash on every rebuild, so macOS sometimes
+  wants to reconfirm mic/camera permission after a `build_app.sh` rerun. A stable self-signed
+  certificate (via Keychain Access) would avoid this if it becomes annoying during Phase 1+
+  iteration — not worth setting up preemptively.
 
 ---
 
