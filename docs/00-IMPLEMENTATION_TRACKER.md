@@ -8,7 +8,8 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus:** Phase 0 is ✅ Done. Ready to start Phase 1 — voice in → text out.
+**Current focus:** Phase 1 is ✅ Done. Ready to start Phase 2 — the brain:
+model-agnostic understanding.
 
 **Status legend:** ☐ not started · 🔶 in progress · ✅ done · 🚫 blocked
 
@@ -97,15 +98,135 @@ Notes (2026-09-05):
 ---
 
 ## Phase 1 — Voice in → text out
-Status: ☐ Not started
+Status: ✅ Done
 
-- ☐ Push-to-talk hotkey trigger
-- ☐ Local STT wired up (`faster-whisper` or `whisper.cpp`)
-- ☐ Transcript logged / shown, no action taken yet
-- **Definition of done:** hotkey → speak → correct transcript in ~1-2s
+- ✅ Push-to-talk hotkey trigger — confirmed live, both `python3 run.py` and packaged `dist/Jarvis.app`
+- ✅ Local STT wired up (`faster-whisper`) — confirmed live, multiple correct transcripts in both modes
+- ✅ Transcript logged / shown, no action taken yet — confirmed via `logs/jarvis.log` and the menu bar UI (screenshot)
+- **Definition of done:** hotkey → speak → correct transcript in ~1-2s — met in steady state
+  (post model-load); see notes for the one-time model-load exception and the
+  Whisper repetition-glitch fix that was needed to get there.
 
-Notes:
-- _(none yet)_
+Notes (2026-09-05):
+- **Implemented, awaiting your live test** (same pattern as Phase 0 — nothing gets
+  checked off until you've actually confirmed it end-to-end):
+  - `src/jarvis/voice.py` — `PushToTalk`: hold **F9** to record (via a `pynput`
+    global key listener), release to stop and transcribe. Recording and
+    transcription both run off the listener thread so holding the key never
+    blocks release-detection, and a slow transcription never blocks the next
+    press.
+  - `src/jarvis/stt.py` — wraps `faster-whisper` (`base.en` model, CPU,
+    int8) for fully local/offline transcription — no audio ever leaves the
+    machine, consistent with doc 02's rationale (voice commands routinely
+    contain credentials/paths).
+  - `src/jarvis/main.py` — menu bar now shows a "Hold F9 to talk" hint and a
+    "Last transcript: ..." item that updates after each utterance. Updated via
+    a `rumps.Timer` polling a lock-protected string, not directly from the
+    background thread — Cocoa/AppKit calls aren't safe off the main thread.
+  - `requirements.txt` — added `faster-whisper>=1.0.0`, `pynput>=1.7.6`;
+    installed into `.venv` and import-checked already this session.
+- **New permission this phase, expect a prompt:** global hotkey listening
+  needs macOS **Input Monitoring** access (System Settings → Privacy &
+  Security → Input Monitoring), separate from Phase 0's mic/camera TCC grant,
+  and tied to whatever binary is actually running — same identity story as
+  Phase 0, so it'll need granting again for `dist/Jarvis.app` even though mic/
+  camera are already approved for it.
+- **First run will be slower than the ~1-2s target:** `faster-whisper` downloads
+  the `base.en` model from Hugging Face Hub the first time it's used (one-time,
+  needs internet). Steady-state latency after that is the real test of the
+  Definition of done.
+- **Not yet done:** confirm hold-F9 → speak → correct transcript appears in the
+  menu bar and `logs/jarvis.log` within ~1-2s, both in dev mode (`python3
+  run.py`) and packaged (`dist/Jarvis.app`, after granting Input Monitoring).
+
+Notes (2026-09-05, later same session — crash on first live test, fixed):
+- **Bug found & fixed: `import numpy` crashed the whole app on launch**
+  (`ImportError ... Symbol not found: _cblas_caxpy$NEWLAPACK$ILP64`, expected
+  in `Accelerate.framework`). numpy 2.5.2 (already present in `.venv` from
+  Phase 0, untouched by this phase's `pip install`) is built against Apple's
+  Accelerate framework for BLAS/LAPACK on Apple Silicon, and this machine's
+  macOS build doesn't have the ILP64 symbol variant that build expects —
+  numpy's C extension fails at `dlopen`, before any of our code runs. This is
+  an environment/OS-vs-wheel mismatch, not something Phase 1's code caused,
+  but it surfaced now because reinstalling `requirements.txt` for
+  `faster-whisper` was the first thing to meaningfully re-touch the venv.
+  **Fix:** pinned `numpy>=1.26.0,<2` in `requirements.txt` — 1.26.4 doesn't hit
+  this Accelerate path and was confirmed working at runtime (imports fine,
+  `check_microphone()`/`check_camera()` both still report ready) despite pip's
+  own metadata claiming `opencv-python>=5.0` needs `numpy>=2` (not actually
+  enforced by anything opencv's C extension calls). Re-ran `python3 run.py`
+  after the fix: menu bar item on screen, mic ready, camera ready, push-to-talk
+  listener started, no crash.
+- **Risk found, not yet confirmed as a real problem — watch for it:**
+  `faster-whisper`'s `av` dependency and `opencv-python` each bundle their own
+  FFmpeg `libavdevice`, and both register the same Objective-C class names
+  (`AVFFrameReceiver`, `AVFAudioReceiver`) into the process at import time,
+  logging `objc[...]: Class ... is implemented in both ... This may cause
+  spurious casting failures and mysterious crashes.` Reproduced the real
+  load order (camera/mic check first, then `faster-whisper`'s model load, as
+  happens live) and re-checked the camera afterward — still reported ready,
+  so this hasn't caused an actual failure yet, just a real warning worth
+  knowing about if camera or transcription behavior ever gets flaky for no
+  obvious reason. No fix applied — nothing to fix until it actually breaks
+  something.
+- **Confirmed working in dev mode (`python3 run.py`):** held F9, said "Hello,
+  how are you?" and "Hey Jarvis!" — both transcribed correctly. First
+  utterance took longer (~2.2s release-to-transcript) purely from the
+  one-time model download/load; the second was ~0.8s release-to-transcript,
+  comfortably inside the ~1-2s Definition of done.
+- **Bug found & fixed: two Jarvis processes running at once caused a false
+  "menu bar is broken" report.** After the dev-mode test above, you checked
+  "the menu bar" and saw only "Check Permissions"/"Quit Jarvis" — but that
+  was `dist/Jarvis.app`, separately auto-started by `launchd` at login and
+  still running **stale, pre-Phase-1 code in memory** (started 16:59, before
+  `main.py`'s last edit at 17:06) — not the `python3 run.py` process you'd
+  just Ctrl-C'd. Two Jarvis menu bar icons look identical, so this is an easy
+  mix-up. Fixed by restarting the launchd job (`launchctl kickstart -k
+  gui/<uid>/com.jarvis.agent`) — no rebuild needed, since `dist/Jarvis.app`
+  loads `run.py` fresh from disk on every launch rather than freezing code
+  into the binary.
+- **Correction: the new permission is Accessibility, not Input Monitoring.**
+  The packaged app's restart logged pynput's own warning verbatim: `This
+  process is not trusted! Input event monitoring will not be possible until
+  it is added to accessibility clients.` — pynput's global listener uses a
+  Quartz event tap, gated by **Accessibility** (System Settings → Privacy &
+  Security → Accessibility), not Input Monitoring as first assumed. Corrected
+  in `src/jarvis/voice.py`'s docstring. Granting it after the process has
+  already started doesn't retroactively fix a live listener — the process
+  needs restarting again afterward.
+- **Confirmed by screenshot: menu bar UI works.** "Last transcript: Hey, how
+  are you? I'm doing fine. How are you doing?" rendered correctly in the
+  dropdown alongside "Check Permissions" / "Hold F9 to talk" / "Quit Jarvis"
+  — all four items present, `_refresh_transcript_ui`'s lock-protected
+  main-thread update works as designed.
+- **Bug found & fixed: Whisper repetition/hallucination glitch on a short
+  clip, which also blew the latency budget.** A 1.4s recording transcribed as
+  "The The The The The The The" and took ~5s (vs. ~1-2s target) — a known
+  Whisper failure mode on short/quiet audio (leading/trailing silence from
+  push-to-talk reaction time confuses decoding into a repetition loop, and
+  the loop itself is what makes it slow). Two other utterances in the same
+  session transcribed correctly (fast: ~0.8s for 2.7s of audio; slower but
+  correct: ~3.4s for 3.4s of audio — roughly real-time throughput for longer
+  speech on `base.en`/CPU, still fine for short command-style phrases).
+  **Fix (`src/jarvis/stt.py`):** enabled `vad_filter=True` (Silero VAD trims
+  silence before decoding — directly targets the repetition trigger) and
+  `condition_on_previous_text=False` (each push-to-talk clip is a standalone
+  utterance, not a continuous stream, so conditioning on a nonexistent
+  "previous segment" was itself a repetition-loop contributor).
+- **`vad_filter` fix confirmed live:** re-tested in dev mode — "Hey, it's me
+  again. How you?" transcribed correctly, log shows `VAD filter removed
+  00:00.560 of audio`. No repetition glitch.
+- **Packaged app (`dist/Jarvis.app`) confirmed too — Phase 1 fully closed
+  out.** Rebuilt via `scripts/build_app.sh` (picks up the numpy pin and both
+  STT/voice fixes; mic/camera permissions survived the rebuild without
+  needing to be re-granted, despite the ad-hoc-signing friction noted in
+  Phase 0). Granted Accessibility to it (System Settings → Privacy & Security
+  → Accessibility), restarted via `launchctl kickstart -k`, held F9 — no
+  "not trusted" warning this time, transcript "Hey, it's me again. How are
+  you?" appeared correctly in both the log and the menu bar UI. Also
+  confirmed: "Hold F9 to talk" / "Last transcript: ..." render dimmed in the
+  dropdown because they're plain informational text with no click callback —
+  expected, unrelated to whether the global F9 listener itself works.
 
 ---
 
@@ -217,3 +338,44 @@ Status: ☐ Not started — deliberately deferred, do not start early
 
 Notes:
 - _(none yet)_
+
+Notes (2026-09-05, later session — Phase 0 regression found on a real login):
+- **Bug: no menu bar icon after an actual reboot/login** (reported as "can't open the app
+  Jarvis, although when I start the laptop it asked for mic and camera permission"). The
+  process was genuinely fine the whole time — `launchd` had it running as PID 778 since
+  16:38:06, `lsappinfo` showed it registered as `type="UIElement"` under `com.jarvis.agent`,
+  `sample` showed it parked in `-[NSApplication run]`, and `logs/jarvis.log` had the normal
+  `mic: ready` / `camera: ready` pair. A screenshot of the full menu bar showed no `Jarvis
+  [🎤📷]` item anywhere. `launchctl kickstart -k` on the *identical* build made it appear
+  instantly, and it then stayed put.
+- **Root cause:** rumps creates the `NSStatusItem` synchronously inside `App.run()`, *before*
+  `AppHelper.runEventLoop()` starts. At login that call can land while the GUI session is
+  still coming up, and macOS silently never places the item — no exception, no error in the
+  unified log (checked: zero scene-activation errors, unlike the earlier `Info.plist=not bound`
+  bug), so the app looks completely healthy while having no UI at all.
+- **Correction to the previous session's verification claim:** `launchctl kickstart -k` is
+  *not* equivalent to a login relaunch, which is what the note above assumed. Kickstart
+  restarts the job on an already-established desktop and always works; only a real login
+  reproduces the race. Phase 0's "runs at login" box was ticked on that false equivalence.
+- **Fix (`src/jarvis/main.py`):**
+  - Added a status-item watchdog: for the first 60s after launch it polls every 3s and, if the
+    item has no placed backing window (`button().window()` nil or zero-width — `isVisible()`
+    only reports requested visibility, so it can't be used here), tears it down and asks the
+    status bar for a fresh one. Recreating via rumps' own `initializeStatusBar()` would append
+    a second "Quit Jarvis" entry each call, so the repair rebuilds the item directly and
+    re-attaches the existing menu.
+  - Moved the startup permission check out of `main()` and onto a timer that fires once the run
+    loop is up. It used to run *before* `app.run()`, so opening the camera delayed the status
+    item's creation by ~8s (26s after launch at login, once cold Python import time is counted)
+    — which is both why the app looked dead on startup and extra time spent inside the fragile
+    window.
+- **Verified:** watchdog reports `Menu bar item is on screen.` on a normal start with zero
+  repairs (no false positives); repair path exercised by forcing one unhealthy check — item is
+  back on screen afterwards, title preserved, menu intact with exactly one "Quit Jarvis".
+  Menu bar icon confirmed by screenshot on the fixed build.
+- **Still unverified:** the actual login path. The race only reproduces on a real reboot/login,
+  so the watchdog's recovery has not yet been seen firing in the situation it was written for.
+  Next reboot, check `logs/jarvis.log` for `Menu bar item was not on screen — recreated it`
+  (watchdog did its job) or `Menu bar item never appeared after 60s` (fix insufficient — the
+  next thing to try is launching via LaunchServices, i.e. `/usr/bin/open -a` in the launchd
+  plist, so the app enters a fully-established GUI session).

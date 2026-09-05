@@ -1,4 +1,13 @@
 rumps>=0.4.0
 sounddevice>=0.4.6
 opencv-python>=4.9.0
-numpy>=1.26.0
+# Pinned below 2.0: numpy 2.5.2 (built against Apple's Accelerate framework)
+# crashed on a bare `import numpy` with "Symbol not found:
+# _cblas_caxpy$NEWLAPACK$ILP64" on this machine's macOS build - see
+# docs/00-IMPLEMENTATION_TRACKER.md Phase 1 notes. 1.26.4 doesn't hit this and
+# is confirmed working at runtime with opencv-python despite pip's metadata
+# claiming opencv-python needs numpy>=2 (that constraint isn't enforced by
+# what opencv-python's C extension actually calls).
+numpy>=1.26.0,<2
+faster-whisper>=1.0.0
+pynput>=1.7.6
