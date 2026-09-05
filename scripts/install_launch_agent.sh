@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Installs Jarvis as a launchd user agent so it starts at login.
 #
-# Prerequisite: build the app bundle first —
-#   source .venv/bin/activate && pip install -r requirements-build.txt
-#   python3 setup.py py2app
+# Prerequisite: build the app bundle first — scripts/build_app.sh
 #
 # Usage: scripts/install_launch_agent.sh
 set -euo pipefail
@@ -15,7 +13,7 @@ PLIST_DEST="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 
 if [[ ! -x "$APP_BINARY" ]]; then
     echo "error: $APP_BINARY not found." >&2
-    echo "Build it first with: python3 setup.py py2app" >&2
+    echo "Build it first with: scripts/build_app.sh" >&2
     exit 1
 fi
 

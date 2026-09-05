@@ -6,8 +6,9 @@ Development entry point for Jarvis.
     python3 run.py
 
 Adds src/ to the path so `jarvis` is importable without installing the
-package — good enough for Phase 0-era iteration. setup.py (py2app) takes over
-for the "real" packaged background-app path once that's worth the effort.
+package. scripts/build_app.sh wraps this same entry point in a real .app
+bundle (so macOS grants it its own mic/camera permission identity) for the
+"real" packaged background-app path.
 """
 import sys
 from pathlib import Path

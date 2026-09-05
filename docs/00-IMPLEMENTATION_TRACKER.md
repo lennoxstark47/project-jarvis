@@ -31,30 +31,52 @@ Status: 🔶 In progress (5/6 tasks done — one needs your hands-on step, see b
 
 Notes (2026-09-05):
 - **Bug found & fixed:** `rumps.notification()` throws `RuntimeError` when run as a bare
-  `python3` script (no `CFBundleIdentifier` — that only exists once packaged as a real `.app`
-  via `setup.py py2app`). This crashed the app *before* the menu bar icon ever appeared, which
-  would have failed Phase 0's core deliverable. Fixed in `main.py` with a try/except that falls
-  back to logging — the menu bar title already carries the same info, so this is a dev-mode-only
-  degradation, not a functional gap. Packaging via py2app removes the need for the fallback.
+  `python3` script (no `CFBundleIdentifier`). This crashed the app *before* the menu bar icon
+  ever appeared, which would have failed Phase 0's core deliverable. Fixed in `main.py` with a
+  try/except that falls back to logging — the menu bar title already carries the same info, so
+  this is a dev-mode-only degradation, not a functional gap.
 - **Flakiness found & fixed:** `check_camera()` occasionally reported "NOT ready" on the very
   first frame read right after opening the device (camera warm-up), even though the camera was
   genuinely accessible — confirmed by immediately retrying and getting a good frame. Fixed by
   retrying up to 5 reads before concluding failure (`warmup_attempts` param).
-- **Verified so far (this session, headless shell, not yet a real login session):** installed
-  `rumps`/`sounddevice`/`opencv-python`/`numpy` into `.venv`; confirmed real hardware exists
-  (`FaceTime HD Camera`, `MacBook Air Microphone` via `system_profiler`/`sounddevice.query_devices()`);
-  ran `python3 run.py` and got `mic: ready` / `camera: ready` in `logs/jarvis.log`, process stayed
-  alive in the rumps event loop until manually killed.
-- **What's still open, and why I didn't do it automatically:** the launchd agent
-  (`scripts/com.jarvis.agent.plist.template` + `scripts/install_launch_agent.sh`) registers a
-  persistent login item on your actual Mac, and building the real `.app` (`python3 setup.py py2app`)
-  plus granting its mic/camera permission prompts both require you to click through System Settings
-  dialogs yourself — neither is something I can do or verify from here. **Your turn:**
-  1. `source .venv/bin/activate && pip install -r requirements-build.txt && python3 setup.py py2app`
-  2. Open `dist/Jarvis.app` once by hand and click "Allow" on the mic/camera prompts (should now
-     say "Jarvis" wants to access..., not "Terminal" or "Python" — that's the thing this step proves).
-  3. Confirm you see a "Jarvis [🎤📷]" item in the actual menu bar.
-  4. `scripts/install_launch_agent.sh` to make it survive login/reboot (`scripts/uninstall_launch_agent.sh` reverses it).
+- **Plan deviation — py2app dropped, replaced with a thin wrapper script:** tried packaging via
+  `setup.py py2app` (as originally planned) and it failed outright on this machine's Anaconda-based
+  Python: the built app crashed on launch with `Library not loaded: @rpath/libffi.8.dylib`, and
+  separately, `cv2`/`sounddevice`/`numpy` weren't even being bundled (py2app's static analysis
+  missed the imports since they're inside function bodies in `permissions.py`). Rather than fight
+  Anaconda-Python/py2app compatibility — and needing to re-fight it every future phase that adds a
+  heavy native dep (Whisper, MediaPipe, Playwright's bundled browsers) — replaced it with
+  `scripts/build_app.sh`: a minimal hand-built `.app` whose executable is a shell one-liner that
+  `exec`s the existing `.venv`'s python3 against `run.py`. Same Info.plist/CFBundleIdentifier/
+  usage-description benefits, none of the freezing fragility. `setup.py` and
+  `requirements-build.txt` deleted; `install_launch_agent.sh` and `main.py`/`run.py` comments
+  updated to point at the new script instead.
+- **Verified so far (this session, automated — not yet an interactive login session):**
+  - Installed `rumps`/`sounddevice`/`opencv-python`/`numpy` into `.venv`.
+  - Confirmed real hardware exists (`FaceTime HD Camera`, `MacBook Air Microphone` via
+    `system_profiler`/`sounddevice.query_devices()`).
+  - Ran `python3 run.py` directly: got `mic: ready` / `camera: ready` in `logs/jarvis.log`,
+    process stayed alive in the rumps event loop until manually killed.
+  - Built `dist/Jarvis.app` via `scripts/build_app.sh`, launched it with `open` (as you actually
+    would): it correctly `exec`'d into `.venv/bin/python3 run.py` (confirmed via `ps`), logged
+    "Jarvis Phase 0 starting up." and "Running mic/camera permission check.", then **blocked** —
+    unlike every prior direct-script run, which returned ready/not-ready immediately. That
+    blocking is consistent with macOS actually presenting a permission dialog this time,
+    attributed to the "Jarvis" bundle identity rather than to Terminal/python3 — which is the
+    exact thing this whole task exists to prove. I have no way to click a system dialog from
+    here, so I killed the process rather than leave it hanging, and deleted `dist/`/`build/`
+    afterward (a fresh `scripts/build_app.sh` run recreates them identically).
+- **What's still open, and why I didn't do it automatically:** clicking through the permission
+  dialogs and eyeballing the menu bar both require you physically present, and installing the
+  launchd agent is a persistent change to your real login items I'm holding off on until the app
+  itself is confirmed working. **Your turn:**
+  1. `scripts/build_app.sh` (rebuilds `dist/Jarvis.app` — quick, no dependencies to reinstall).
+  2. `open dist/Jarvis.app` and click "Allow" on the mic/camera prompts — confirm they say
+     "Jarvis" wants to access..., not "Terminal" or "Python".
+  3. Confirm you see a "Jarvis [🎤📷]" item in the actual menu bar (click "Check Permissions"
+     there to re-run the check on demand).
+  4. `scripts/install_launch_agent.sh` to make it survive login/reboot
+     (`scripts/uninstall_launch_agent.sh` reverses it).
   5. Tell me it's confirmed (or what broke) and I'll check this off and close out Phase 0.
 
 ---

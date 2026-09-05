@@ -60,12 +60,12 @@ class JarvisApp(rumps.App):
         except RuntimeError:
             # macOS notifications need a real app-bundle identity
             # (CFBundleIdentifier), which a bare `python3 run.py` process
-            # doesn't have — only the py2app-built .app does. The menu bar
-            # title update above already carries the same info, so this is a
-            # dev-mode-only degradation, not a functional gap.
+            # doesn't have — only the scripts/build_app.sh-built .app does.
+            # The menu bar title update above already carries the same info,
+            # so this is a dev-mode-only degradation, not a functional gap.
             logger.info(
                 "Skipping OS notification (no app bundle identity yet — "
-                "expected until packaged via setup.py py2app)."
+                "expected until packaged via scripts/build_app.sh)."
             )
 
     @rumps.clicked("Check Permissions")
