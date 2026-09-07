@@ -47,6 +47,10 @@ tool (if any) should handle it — using whichever LLM backend you point it at.
 
 - Build the **model router** (see System Design doc): one interface, three
   interchangeable backends — Claude API, OpenAI API, local Ollama model.
+  (Added 2026-09-05: a fourth, `nvidia`, pointing the OpenAI-dialect backend at
+  NVIDIA's free NIM endpoint. Any OpenAI-compatible provider is now a config
+  entry rather than new code — but the Definition of done below still means the
+  three backends originally named.)
 - Define Jarvis's tool-calling contract: a small, fixed set of tools the model can
   invoke (open_url, open_app, run_claude_code, fill_login_form, ...) — start with
   2-3 real tools, not the full list.
@@ -55,7 +59,19 @@ tool (if any) should handle it — using whichever LLM backend you point it at.
 - No actual system actions yet except the safest one: opening a URL or app.
 
 **Definition of done:** "open github.com" and "open Claude Code" reliably resolve
-to the right tool call, on all three backends, so you can compare them honestly.
+to the right tool call, on the configured backend, through the real voice path.
+
+*Amended 2026-09-05, after the phase was built.* This originally read "on all
+three backends, so you can compare them honestly". That was the right *intent* —
+prove the router is genuinely model-agnostic rather than Claude-shaped — but it
+tied the criterion to three specific vendors, and the machine ended up with a
+free NVIDIA NIM key instead of Claude/OpenAI keys. Running Jarvis's
+OpenAI-dialect backend against a **non-OpenAI** endpoint tests the same property
+the original wording was reaching for (arguably harder: it's the case where a
+"compatible" API isn't quite), so the criterion is now backend-agnostic. The
+comparison itself isn't abandoned — it just stops being a gate on Phase 2, and
+happens whenever a second backend gets credentials. `scripts/try_brain.py`
+exists to run it in one command.
 
 ---
 

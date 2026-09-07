@@ -6,9 +6,15 @@ Phase 0 proved out the two things every later phase depends on:
   than as a foreground terminal app
 - it can get real microphone + camera access from that same process
 
-Phase 1 adds push-to-talk voice capture on top of that: hold F9, speak, and
+Phase 1 added push-to-talk voice capture on top of that: hold F9, speak, and
 the transcript shows up in the menu bar and the log (see jarvis.voice /
-jarvis.stt) — no action is taken on it yet, that's Phase 2's job.
+jarvis.stt).
+
+Phase 2 hands that transcript to the brain (jarvis.agent) instead of only
+displaying it: the configured LLM backend decides whether the utterance is a
+request for one of Jarvis's tools (jarvis.tools) or just something to reply to,
+and both the reply and any action taken show up in the menu bar. Which backend
+answers is a config/jarvis.json setting, not a code change (jarvis.router).
 
 Run during development with:
 
@@ -27,6 +33,7 @@ from pathlib import Path
 import rumps
 from AppKit import NSStatusBar
 
+from jarvis.agent import Agent
 from jarvis.permissions import check_camera, check_microphone
 from jarvis.voice import HOTKEY_NAME, PushToTalk
 
@@ -49,17 +56,27 @@ logger = logging.getLogger("jarvis.main")
 STATUS_ITEM_WATCH_INTERVAL = 3.0
 STATUS_ITEM_WATCH_DURATION = 60.0
 
-# How often the main-thread timer checks for a new transcript to display.
+# How often the main-thread timer checks for new text to display.
 # Kept separate from the status-item watchdog interval - this one is about
 # UI latency (part of the ~1-2s Definition of done), that one about recovery.
 TRANSCRIPT_UI_POLL_INTERVAL = 0.25
+
+# Menu bar placeholders, also what the labels revert to on a fresh launch.
+NO_TRANSCRIPT = "(none yet)"
+NO_REPLY = "(nothing yet)"
 
 
 class JarvisApp(rumps.App):
     def __init__(self) -> None:
         super().__init__("Jarvis", icon=None, quit_button="Quit Jarvis")
-        self.transcript_item = rumps.MenuItem("Last transcript: (none yet)")
-        self.menu = ["Check Permissions", f"Hold {HOTKEY_NAME.upper()} to talk", self.transcript_item]
+        self.transcript_item = rumps.MenuItem(f"Last transcript: {NO_TRANSCRIPT}")
+        self.reply_item = rumps.MenuItem(f"Jarvis: {NO_REPLY}")
+        self.menu = [
+            "Check Permissions",
+            f"Hold {HOTKEY_NAME.upper()} to talk",
+            self.transcript_item,
+            self.reply_item,
+        ]
         self._status_item_elapsed = 0.0
         self._status_item_ever_on_screen = False
         self._status_item_repairs = 0
@@ -71,8 +88,16 @@ class JarvisApp(rumps.App):
         # plain string under a lock - a rumps.Timer on the main thread is what
         # actually touches the menu item.
         self._transcript_lock = threading.Lock()
-        self._latest_transcript = "(none yet)"
-        self._displayed_transcript = "(none yet)"
+        self._latest_transcript = NO_TRANSCRIPT
+        self._displayed_transcript = NO_TRANSCRIPT
+        self._latest_reply = NO_REPLY
+        self._displayed_reply = NO_REPLY
+
+        # The brain. Constructed here but not connected to anything until the
+        # first utterance - jarvis.agent builds the backend (and reads its API
+        # key) lazily, so a missing key surfaces as a spoken-style error on the
+        # first command rather than a crash at launch.
+        self.agent = Agent()
 
     # -- permission check ---------------------------------------------------
 
@@ -110,20 +135,43 @@ class JarvisApp(rumps.App):
     def handle_transcript(self, text: str) -> None:
         """Called from PushToTalk's background thread when a transcript is ready.
 
-        Only writes the plain string under a lock - see the comment on
-        ``_latest_transcript`` in __init__ for why the actual menu bar update
-        happens elsewhere, on the main thread.
+        Runs the transcript through the agent loop and stores both halves for
+        the UI. Only plain strings are written here, under a lock - see the
+        comment on ``_latest_transcript`` in __init__ for why the actual menu
+        bar update happens elsewhere, on the main thread.
+
+        The agent call is deliberately made on this (background) thread: it's a
+        network round-trip to an LLM, and doing it on the main thread would
+        freeze the menu bar for its duration.
         """
         with self._transcript_lock:
             self._latest_transcript = text if text else "(heard nothing)"
 
+        if not text:
+            return
+
+        result = self.agent.handle(text)
+        logger.info("agent: %s", result.summary())
+        with self._transcript_lock:
+            self._latest_reply = result.reply or self._describe_actions(result)
+
+    @staticmethod
+    def _describe_actions(result) -> str:
+        """Fallback label for a turn where the model acted but said nothing."""
+        if result.actions:
+            return " · ".join(output for _call, output in result.actions)
+        return result.error or NO_REPLY
+
     def _refresh_transcript_ui(self, _timer: rumps.Timer) -> None:
         with self._transcript_lock:
             text = self._latest_transcript
-        if text == self._displayed_transcript:
-            return
-        self._displayed_transcript = text
-        self.transcript_item.title = f"Last transcript: {text}"
+            reply = self._latest_reply
+        if text != self._displayed_transcript:
+            self._displayed_transcript = text
+            self.transcript_item.title = f"Last transcript: {text}"
+        if reply != self._displayed_reply:
+            self._displayed_reply = reply
+            self.reply_item.title = f"Jarvis: {reply}"
 
     def _startup_check(self, timer: rumps.Timer) -> None:
         """Run the startup permission check once, from inside the run loop.

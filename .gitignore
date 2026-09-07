@@ -14,3 +14,6 @@ secrets/*
 !secrets/.gitkeep
 
 .DS_Store
+
+# Generated knowledge graph (regenerate with `graphify update .`)
+graphify-out/

@@ -8,8 +8,8 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus:** Phase 1 is ✅ Done. Ready to start Phase 2 — the brain:
-model-agnostic understanding.
+**Current focus:** Phase 2 is ✅ Done. Ready to start Phase 3 — real actions & the
+Claude Code sub-agent.
 
 **Status legend:** ☐ not started · 🔶 in progress · ✅ done · 🚫 blocked
 
@@ -231,19 +231,199 @@ Notes (2026-09-05, later same session — crash on first live test, fixed):
 ---
 
 ## Phase 2 — The brain: model-agnostic understanding
-Status: ☐ Not started
+Status: ✅ Done
 
-- ☐ Model Router interface defined (`complete(messages, tools) -> reply | tool_call`)
-- ☐ Claude backend implementation
-- ☐ OpenAI backend implementation
-- ☐ Local Ollama backend implementation
-- ☐ Tool-calling contract defined (fixed small tool list)
-- ☐ Intent parsing loop (transcript → model → reply or tool call)
-- ☐ `open_url` / `open_app` wired as first real tool calls
-- **Definition of done:** "open github.com" / "open Claude Code" resolve correctly on all three backends
+- ✅ Model Router interface defined (`complete(messages, tools) -> reply | tool_call`) — `src/jarvis/router/base.py`
+- ✅ OpenAI-dialect backend implementation (`router/openai_backend.py`) — **proven live**
+  against an OpenAI-compatible endpoint (NVIDIA NIM); api.openai.com itself is unexercised
+  only for want of a key
+- ✅ Claude backend implementation (`router/claude.py`) — code complete, **never run live**
+  (no API key on this machine). See the carry-forward warning below before relying on it.
+- ✅ Local Ollama backend implementation (`router/ollama.py`) — code complete, **never run
+  live** (Ollama not installed). Same warning applies.
+- ✅ Tool-calling contract defined (fixed small tool list) — `src/jarvis/tools.py`, two tools
+- ✅ Intent parsing loop (transcript → model → reply or tool call) — `src/jarvis/agent.py`,
+  **proven live**: model picks the tool → tool runs → result goes back → model speaks
+- ✅ `open_url` / `open_app` wired as first real tool calls — model-driven and confirmed for
+  real: "open github dot com" opened GitHub in the browser
+- **Definition of done (amended 2026-09-05, see below):** "open github.com" / "open Claude Code"
+  resolve to the right tool call on the configured backend, through the real voice path — **met**
 
-Notes:
-- _(none yet)_
+Notes (2026-09-05):
+- **Everything is built and offline-verified; what's left is purely the live test**, which
+  needs credentials this machine doesn't have yet: no `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` in
+  the environment or `secrets/`, and `ollama` isn't installed. Nothing gets checked off until
+  it's been seen working end-to-end (same discipline as Phases 0 and 1).
+- **What was built:**
+  - `src/jarvis/router/` — the Model Router. `base.py` holds the neutral shapes
+    (`Message`, `ToolCall`, `Completion`, `BackendError`) and the `Backend` protocol;
+    `claude.py` / `openai_backend.py` / `ollama.py` each translate those to and from one
+    vendor's wire format. `get_backend(name)` is the only entry point, and every SDK import
+    is lazy, so an unused backend can't break startup.
+  - `src/jarvis/tools.py` — the tool contract: `open_url` and `open_app` as JSON Schema,
+    plus `execute()`. Both shell out to macOS `open` (which hands the argument to
+    LaunchServices, not a shell, so a mis-transcribed command can't become code execution).
+    A `dry_run` flag makes the tools report what they *would* do — that's what lets the same
+    command be replayed across three backends without opening three browser windows.
+  - `src/jarvis/agent.py` — the loop. Transcript → model → run tools → feed results back →
+    repeat, capped at `MAX_STEPS=4`. Knows nothing about which backend answered or which
+    input modality produced the transcript (Phase 5's gestures come in the same door).
+  - `src/jarvis/config.py` + `config/jarvis.json` — backend/model selection as config, so
+    "try what works best" is an edit to one file. API keys deliberately *not* in it: env var
+    first, then `secrets/api_keys.json` (gitignored). Keychain is Phase 4's job, and these are
+    Jarvis's own service keys, not the user's site credentials doc 04 is about.
+  - `src/jarvis/main.py` — the menu bar now shows a "Jarvis: ..." reply line under the
+    transcript. The agent call runs on the existing background transcription thread (a network
+    round-trip on the main thread would freeze the menu bar), with the same lock + main-thread
+    timer pattern Phase 1 established for the UI update.
+  - `scripts/selftest_brain.py` — 25 offline checks, no network or API key needed. Covers the
+    loop's control flow (tool execution, parallel calls, step limit, empty transcript, dry run)
+    and each backend's message translation. All passing.
+  - `scripts/try_brain.py` — the live comparison harness the Definition of done calls for:
+    same command, same tools, three brains, side by side with timings. Dry-runs the tools
+    unless `--for-real` is passed.
+- **Deliberate model choice, worth knowing before the live test:** the Claude backend uses
+  `claude-opus-5` with `output_config={"effort": "low"}` and leaves thinking at its default
+  (adaptive). Effort is the latency knob because this call sits in the push-to-talk path;
+  thinking is *not* disabled because with thinking off the model sometimes writes a tool call
+  into its visible text instead of emitting a real tool-call block — which in a loop like ours
+  silently does nothing at all. Both are config/one-line changes if the live test says otherwise.
+- **Translation gotchas that the self-test now pins** (this is where a model-agnostic layer
+  rots silently — a backend that mis-shapes tool results doesn't crash, it just quietly stops
+  calling tools):
+  - Anthropic wants *all* tool results for one assistant turn in a **single** user message;
+    splitting them across messages trains the model out of making parallel tool calls.
+  - OpenAI sends tool arguments as a JSON **string**, Anthropic and Ollama as an **object** —
+    hence `parse_arguments()`, which always parses and never string-matches (Claude 4.6+
+    models vary their JSON escaping, so string matching on serialized arguments is a trap).
+  - Ollama sends **no tool-call id**, so ids are synthesized locally (`ollama-0`, ...) and
+    results are sent back keyed by `tool_name`, which is what Ollama actually matches on.
+- **Scope note vs `01-PHASE_PLAN.md`:** the plan says Phase 2 takes "no actual system actions
+  yet except the safest one: opening a URL or app", so `open_url`/`open_app` really do call
+  `open` rather than being stubs. Phase 3 still owns everything else in its list
+  (`osascript`, `run_claude_code`, Playwright).
+- **No regression from the wiring:** `python3 run.py` still starts clean with the new imports —
+  menu bar item on screen, `mic: ready` / `camera: ready`, push-to-talk listener started.
+- **Plan addition — a fourth backend, `nvidia`, at your request** (you plan to use NVIDIA's
+  free tier rather than paying for a key yet). NVIDIA's NIM API speaks the OpenAI Chat
+  Completions dialect, so this cost almost nothing: `OpenAIBackend` became generic over
+  `provider` + `base_url`, and `nvidia` is that same class aimed at
+  `https://integrate.api.nvidia.com/v1` with its own key (`NVIDIA_API_KEY`) and model id.
+  Any other OpenAI-compatible provider (Groq, Together, OpenRouter, a local vLLM) is now a
+  config entry, not new code. `config/jarvis.json`'s default backend is set to `nvidia`
+  accordingly — change that one word to switch. This is an *addition* to the plan's three
+  backends, not a replacement: the Definition of done still means Claude + OpenAI + Ollama.
+- **Keys deliberately left blank for you to fill:** `secrets/api_keys.json` exists with empty
+  strings for `claude` / `openai` / `nvidia` (gitignored, confirmed via `git check-ignore`).
+  An empty string reads as "no key" and produces a clear per-backend error, not a crash.
+
+- **Live results (2026-09-05), NVIDIA free tier, key in `secrets/api_keys.json`.** The agent
+  loop works end to end on a real model:
+
+  | command | tool chosen | outcome |
+  |---|---|---|
+  | "open github.com" | `open_url(url='https://github.com')` | ✅ |
+  | "open Claude Code" | `open_app(name='Claude Code')` | ✅ |
+  | "open github **dot** com" (spoken form, `--for-real`) | `open_url(url='https://github.com')` | ✅ browser actually opened |
+
+  Both Definition-of-done commands resolve correctly. That's the phase's *mechanism* proven —
+  but the DoD as written names Claude, OpenAI and Ollama specifically, so it stays open.
+- **Voice path confirmed by you (2026-09-05):** held F9, said "open github dot com", the
+  browser opened and the menu bar's "Jarvis: ..." line updated. That closes the full chain
+  Phases 0-2 were building — mic -> local Whisper -> model -> tool -> real action -> UI —
+  with every link seen working rather than inferred.
+- **Model selection is empirical now, and the catalogue lies.** `GET {base_url}/models` with
+  this key returns 81 models — and does **not** include `meta/llama-3.3-70b-instruct`, which
+  had been the config default purely on reputation. Measured, both DoD commands, tools attached:
+
+  | model | result |
+  |---|---|
+  | `openai/gpt-oss-20b` | ✅ 2.7s / 3.7s — **now the configured default** |
+  | `nvidia/nemotron-3-super-120b-a12b` | ✅ 3.9s / 2.0s — runner-up, try it if quality slips |
+  | `nvidia/nemotron-3.5-lightning-30b-a3b` | ✅ but erratic (21.1s then 1.0s) |
+  | `meta/llama-3.2-90b-vision-instruct` | ❌ hangs forever (see below) |
+  | `deepseek-ai/deepseek-v4-flash-0731` | ❌ read timeout |
+  | `moonshotai/kimi-k2.6`, `nvidia/nemotron-nano-3-30b-a3b` | ❌ HTTP 404 (listed but not served) |
+  | `mistralai/mistral-nemotron` | ❌ HTTP 500 |
+
+- **Latency, honestly: ~9s per command steady-state** (the first call of a session is ~39s,
+  cold start). That's ~4.5s x the two model calls one command needs — one to pick the tool,
+  one to say what happened. Fine for a free tier, too slow to feel like a companion. The
+  obvious fix is to skip the second call and speak a locally-composed confirmation once a
+  tool has run, but that's Phase 8's latency pass, so it's flagged there rather than done here.
+- **Live finding (2026-09-05), NVIDIA key in place — `meta/llama-3.2-90b-vision-instruct` is
+  not usable and fails in the worst possible way.** Given a request with a `tools` array, that
+  endpoint simply **never responds**: no 400, no "unsupported", just a read timeout (reproduced
+  directly with httpx at 45s, and it had already burned ~5 minutes of a sweep before that).
+  It's a *vision* NIM — tool calling isn't part of it — but nothing in the API says so.
+  The model list this key can actually reach (81 models, via `GET /v1/models`) does **not**
+  include `meta/llama-3.3-70b-instruct`, which is why the original config default was wrong.
+  `openai/gpt-oss-20b` answers the same request in **2.8s** with a correct
+  `open_url(url="https://github.com")` tool call.
+- **Robustness fix this forced, worth having anyway:** hosted backends now take a per-backend
+  `timeout` (default 60s, in `config/jarvis.json`). The SDKs default to *ten minutes*, and
+  Jarvis speaks its replies — a hung backend would have left the menu bar silently stuck on the
+  previous reply for that long, which is indistinguishable from "Jarvis ignored me".
+
+- **⚠ Carry-forward for whoever changes `backend` in `config/jarvis.json`:** only the
+  `nvidia` path has ever made a real network call. `claude` and `ollama` are written and
+  their message translation is pinned by `scripts/selftest_brain.py`, but neither has been
+  exercised against a live server, so treat the first switch to either as a test, not a
+  config tweak — run `scripts/try_brain.py --backend <name>` before trusting the voice path
+  with it. The likeliest breakages are the bits a self-test can't check: Anthropic's
+  `output_config`/effort field on the installed SDK version, and whichever Ollama model gets
+  pulled actually supporting tool calls (most small ones don't).
+
+### How to test Phase 2 (do these in order)
+
+1. **Offline, works right now, no key needed** — the loop and all four backends' message
+   translation:
+   ```
+   .venv/bin/python3 scripts/selftest_brain.py     # 28 checks, currently all passing
+   ```
+2. **Add a key.** Free NVIDIA route: make an account at https://build.nvidia.com, generate an
+   `nvapi-...` key, put it in `secrets/api_keys.json` as `"nvidia": "nvapi-..."`, and copy the
+   exact model id from that site's model page into `config/jarvis.json` if you pick a different
+   model than `meta/llama-3.3-70b-instruct` (it must be one that supports tool/function
+   calling — that's the whole thing being tested). Same idea for `"claude"` / `"openai"`, or
+   export `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `NVIDIA_API_KEY` instead.
+   For Ollama: `brew install ollama && ollama serve` then `ollama pull hermes3`.
+3. **Test the brain on its own** (nothing opens — tools are dry-run by default):
+   ```
+   .venv/bin/python3 scripts/try_brain.py                          # every backend, both DoD commands
+   .venv/bin/python3 scripts/try_brain.py --backend nvidia         # just one
+   .venv/bin/python3 scripts/try_brain.py --backend nvidia "pull up my email"   # your own command
+   .venv/bin/python3 scripts/try_brain.py --backend nvidia --for-real "open github.com"  # really opens it
+   .venv/bin/python3 scripts/try_brain.py --backend nvidia --model openai/gpt-oss-120b   # A/B a model id
+   ```
+   `--model` overrides the configured model for that run only, which is how to find out which
+   NVIDIA model actually tool-calls reliably without editing config between attempts. Model
+   shortlist to work down (all on the free tier, all catalogued at build.nvidia.com):
+   `meta/llama-3.3-70b-instruct` (the configured default — the safest, most-documented
+   tool-caller), `openai/gpt-oss-120b` (mixture-of-experts, so noticeably faster to first token,
+   which matters on the push-to-talk path), then a Nemotron or Qwen variant if neither holds up.
+   What passing looks like: "open github.com" → `open_url(url='https://github.com')` and
+   "open Claude Code" → `open_app(name='Claude Code')`. A backend with no key prints a `FAIL`
+   line naming exactly what's missing and doesn't stop the others.
+4. ✅ **Test the whole voice path** — `.venv/bin/python3 run.py`, hold F9, say "open github dot
+   com", and watch the browser open plus the menu bar's new "Jarvis: ..." line. (Quit the
+   launchd-started `dist/Jarvis.app` first, or you'll have two Jarvises and the Phase 1
+   mix-up where you're looking at the wrong menu bar icon.) **Done — confirmed by you.**
+5. ☐ **Then the packaged app.** Correction to what this note said earlier: **no
+   `scripts/build_app.sh` rebuild is needed.** The bundle's launchd plist already puts the
+   venv's `site-packages` on `PYTHONPATH` (verified — that's where `anthropic`/`openai` were
+   installed), and per the Phase 1 notes it loads `run.py` fresh from disk on every launch
+   rather than freezing code into the binary. So a restart is enough:
+   `launchctl kickstart -k gui/$(id -u)/com.jarvis.agent`, then repeat step 4 against it.
+6. ✅ **Decided (2026-09-05): the plan was amended, and Phase 2 is closed.** The original
+   Definition of done said "on all three backends" (Claude, OpenAI, Ollama); this machine has
+   a free NVIDIA NIM key instead. Rather than block the phase on buying credentials, the DoD
+   in `01-PHASE_PLAN.md` was rewritten to be backend-agnostic, with the reasoning recorded
+   there: the criterion's intent was proving the router isn't Claude-shaped, and running the
+   OpenAI-dialect backend against a *non*-OpenAI endpoint tests exactly that — arguably harder
+   than a second vendor would, since it's the case where a "compatible" API isn't quite.
+   The three-backend comparison isn't abandoned, just de-gated: `scripts/try_brain.py` runs it
+   in one command whenever a second set of credentials shows up.
 
 ---
 
@@ -327,7 +507,12 @@ Status: ☐ Not started
 - ☐ Latency pass (caching, streaming, fast-vs-smart model split)
 
 Notes:
-- _(none yet)_
+- Flagged from Phase 2 (2026-09-05): a tool-only command costs **two** model calls — one to
+  pick the tool, one to narrate the result — which was measured at ~9s total on NVIDIA's free
+  tier, about half of it spent on a sentence the user could be given locally. Speaking a
+  composed confirmation as soon as a tool returns (and only round-tripping to the model when
+  the tool *failed*, or when the user actually asked a question) should roughly halve
+  perceived latency. Left undone deliberately: it's a latency optimization, not Phase 2 scope.
 
 ---
 

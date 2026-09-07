@@ -1,0 +1,24 @@
+{
+  "backend": "nvidia",
+  "backends": {
+    "claude": {
+      "model": "claude-opus-5",
+      "effort": "low",
+      "timeout": 60
+    },
+    "openai": {
+      "model": "gpt-4o",
+      "base_url": null,
+      "timeout": 60
+    },
+    "nvidia": {
+      "model": "openai/gpt-oss-20b",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "timeout": 60
+    },
+    "ollama": {
+      "model": "hermes3",
+      "host": "http://localhost:11434"
+    }
+  }
+}

@@ -11,3 +11,10 @@ opencv-python>=4.9.0
 numpy>=1.26.0,<2
 faster-whisper>=1.0.0
 pynput>=1.7.6
+
+# Phase 2 - the brain. Each backend's SDK is imported lazily by its module in
+# jarvis/router/, so an unused/uninstalled one never affects startup. Ollama
+# needs no package - jarvis/router/ollama.py talks to its local HTTP API with
+# httpx (already pulled in by the anthropic SDK).
+anthropic>=1.0.0
+openai>=1.0.0
