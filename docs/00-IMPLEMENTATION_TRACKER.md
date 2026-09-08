@@ -478,7 +478,7 @@ Notes (2026-09-07):
     with the same lock + main-thread-timer discipline Phase 1 established. Menu text is
     truncated to 90 chars for display only (Claude Code returns paragraphs); the log keeps
     the full text.
-  - `scripts/selftest_actions.py` — 107 offline checks, no API key, no network, no money.
+  - `scripts/selftest_actions.py` — 110 offline checks, no API key, no network, no money.
   - `scripts/try_actions.py` — the live harness (each tool on its own, or a whole spoken
     sentence through the agent). Dry-runs unless `--for-real`, same as `try_brain.py`.
 
@@ -736,6 +736,46 @@ its own model.
    ran and there is no result to report (it now answers "this was a dry-run"). Separately,
    the follow-up path was calling `config.save_alias` even on a dry run, so a
    backend-comparison run left a junk alias in `config/jarvis.json`. Both fixed and pinned.
+
+### Voice test on the local model (2026-09-08) — fast, and one more resolver bug
+
+Same four commands by voice, `ollama` / `granite4.1:3b` on the LAN:
+
+| step | routing latency |
+|---|---|
+| "open github.com" → `open_url` | **1.4s** (transcript to spoken reply) |
+| "open project jarvis and use Claude Code…" → tool call | **1.1s** |
+| "use Claude Code on my thesis…" → parked the question | **1.5s** |
+| the spoken location → resolved, window opened | **15ms** |
+
+Claude Code's own 30-50s is now the only wait, which is the right shape: the assistant is
+instant and the sub-agent takes as long as the work takes.
+
+**Bug found, and it was two bugs.** Told *"It's inside the Docs folder in the project
+Jarvis"*, Jarvis opened `project_jarvis` rather than `project_jarvis/docs` — quietly one
+directory up from what was said. Cause:
+
+1. **Fuzzy matching absorbed a word into a shorter name.** From `~/Desktop`, difflib scored
+   `"docsprojectjarvis"` against `"projectjarvis"` at **0.897** — over the 0.8 cutoff — so
+   the walk consumed all three words onto the parent and reported a *complete* match, with
+   "docs" simply gone. Fuzzy is meant to absorb a *mishearing* ("projekt jarvis"), not an
+   extra path component, so it now also requires the two names to be within
+   `FUZZY_LENGTH_RATIO` (0.8) of each other in length. "cliant work" still matches "client
+   work"; "docs project jarvis" no longer matches "project_jarvis".
+2. **"X inside Y" says the child before the parent**, and the walk only ever went
+   left-to-right. "in"/"inside"/"under"/"within" were being thrown away as filler when they
+   are in fact the only structure in the sentence. They're now group boundaries, and
+   `resolve_spoken` tries the groups as spoken, rotated (first group last), and fully
+   reversed — the filesystem decides, since only an order that matches real directories the
+   whole way down counts. All of these now land correctly:
+   *"the Docs folder in the project Jarvis"*, *"project jarvis, inside the docs folder"*,
+   *"the invoicing folder in Documents slash client work"*, *"the src folder in desktop
+   slash project jarvis"*.
+
+Worth noting what this bug looked like from outside: **nothing failed.** Claude Code opened,
+ran, and gave a good answer — because the repo root happens to contain `docs/`. A resolver
+that lands one directory up is invisible right until it isn't, which is why `resolve_spoken`
+returns None rather than a best guess whenever the words don't match something real.
 
 ### How to test Phase 3 (do these in order)
 

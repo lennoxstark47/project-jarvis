@@ -182,12 +182,23 @@ def _ambiguous(name: str, matches: list[Path]) -> str:
 
 # -- answering "where is it?" out loud --------------------------------------
 
+# How close in length a fuzzy match has to be. A misheard name is roughly as
+# long as the real one; a phrase that merely *contains* the real one is not.
+FUZZY_LENGTH_RATIO = 0.8
+
 # Words people say around a location that aren't part of it.
 _FILLER = {
-    "it's", "its", "it", "is", "in", "at", "on", "the", "my", "under", "inside",
+    "it's", "its", "it", "is", "at", "on", "the", "my",
     "folder", "directory", "dir", "called", "named", "located", "you'll", "find",
     "look", "there", "a", "of", "path", "to", "please", "um", "uh",
 }
+
+# These separate one folder name from another, and — unlike the filler above —
+# they carry structure, so they can't just be deleted. Which side is the parent
+# depends on the sentence: "the docs folder in project jarvis" is the reverse of
+# "project jarvis, inside the docs folder", and people say both. So they become
+# group boundaries and `resolve_spoken` tries the order both ways round.
+_SEPARATORS = {"in", "inside", "under", "within"}
 
 # What Whisper writes when you say punctuation out loud.
 _SPOKEN_PUNCTUATION = {
@@ -210,8 +221,14 @@ def _forbidden() -> set[Path]:
 
 
 def _segments(text: str) -> list[str]:
-    """Spoken location -> path segments, e.g. "in Documents slash client work"
-    -> ["documents", "client work"]."""
+    """Spoken location -> folder-name groups, outermost-first as spoken.
+
+    "in Documents slash client work" -> ["documents", "client work"]
+    "inside the Docs folder in project Jarvis" -> ["docs", "project jarvis"]
+
+    A spoken "slash" and a preposition both end a group; the filler words
+    around them are dropped.
+    """
     words = re.split(r"[\s,]+", (text or "").strip().lower())
     parts: list[str] = []
     for word in words:
@@ -220,6 +237,8 @@ def _segments(text: str) -> list[str]:
             continue
         if word in _SPOKEN_PUNCTUATION:
             parts.append(_SPOKEN_PUNCTUATION[word])
+        elif word in _SEPARATORS:
+            parts.append("/")
         elif word in _FILLER:
             continue
         else:
@@ -250,7 +269,18 @@ def _child_matching(parent: Path, segment: str, *, fuzzy: bool = True) -> Path |
         return partial[0]
     if not fuzzy:
         return None
-    close = difflib.get_close_matches(key, [_normalize(e.name) for e in entries], n=2, cutoff=0.8)
+    # Fuzzy is here for a *misheard name* ("projekt jarvis"), so the two strings
+    # have to be about the same length. Without that guard, difflib scores
+    # "docsprojectjarvis" against "projectjarvis" at 0.90 and the walk happily
+    # consumes the word "docs" into the parent directory's name — which is
+    # exactly how "inside the Docs folder in the project Jarvis" resolved to the
+    # repo root, silently dropping the folder the user actually named.
+    names = [_normalize(entry.name) for entry in entries]
+    close = [
+        name
+        for name in difflib.get_close_matches(key, names, n=3, cutoff=0.8)
+        if min(len(key), len(name)) / max(len(key), len(name)) >= FUZZY_LENGTH_RATIO
+    ]
     if len(close) == 1:
         return next(entry for entry in entries if _normalize(entry.name) == close[0])
     return None
@@ -361,14 +391,31 @@ def resolve_spoken(project: str, answer: str) -> Path | None:
     # that accounts for *every* word, and only widen to fuzzy when no exact walk
     # does. A partial walk is still returned as a last resort, because landing on
     # the containing folder is useful — `resolve_spoken` searches inside it.
+    # People name the parts of a path in more than one order, and all of these
+    # are things someone actually says:
+    #   "Documents, client work, invoicing"          -> as spoken
+    #   "the invoicing folder in Documents/client work" -> first group last
+    #   "invoicing, in client work, in Documents"    -> fully reversed
+    # So try each ordering and let the filesystem decide: only an order that
+    # matches real directories the whole way down counts as an answer.
+    orders = [segments]
+    if len(segments) > 1:
+        orders.append(segments[1:] + segments[:1])
+        reverse = list(reversed(segments))
+        if reverse not in orders:
+            orders.append(reverse)
+
     complete_walks: list[Path] = []
     partial_walks: list[Path] = []
     for allow_fuzzy in (False, True):
-        for start in starts:
-            reached, complete = _walk(start, segments, fuzzy=allow_fuzzy)
-            if reached is None:
-                continue
-            (complete_walks if complete else partial_walks).append(reached)
+        for order in orders:
+            for start in starts:
+                reached, complete = _walk(start, order, fuzzy=allow_fuzzy)
+                if reached is None:
+                    continue
+                (complete_walks if complete else partial_walks).append(reached)
+            if complete_walks:
+                break
         if complete_walks:
             break
 

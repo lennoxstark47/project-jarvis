@@ -464,6 +464,21 @@ with tempfile.TemporaryDirectory() as tmp:
                 str(spoken("client work", "documents slash client work")),
             )
             check(
+                "'the X folder in Y' names the child first, and still resolves",
+                spoken("invoicing", "the invoicing folder in Documents slash client work")
+                == home / "Documents" / "client work" / "invoicing",
+                str(spoken("invoicing", "the invoicing folder in Documents slash client work")),
+            )
+            check(
+                "a fuzzy match can't absorb a word into a shorter parent name",
+                # "client work invoicing" scores 0.85 against "client work";
+                # without a length guard the walk eats "invoicing" and stops at
+                # the parent — the live failure this pins.
+                spoken("invoicing", "documents client work invoicing")
+                == home / "Documents" / "client work" / "invoicing",
+                str(spoken("invoicing", "documents client work invoicing")),
+            )
+            check(
                 "a deeper folder isn't swallowed by a fuzzy match on its parent",
                 spoken("invoicing", "documents client work invoicing")
                 == home / "Documents" / "client work" / "invoicing",
