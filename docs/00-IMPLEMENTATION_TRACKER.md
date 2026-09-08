@@ -478,7 +478,7 @@ Notes (2026-09-07):
     with the same lock + main-thread-timer discipline Phase 1 established. Menu text is
     truncated to 90 chars for display only (Claude Code returns paragraphs); the log keeps
     the full text.
-  - `scripts/selftest_actions.py` — 110 offline checks, no API key, no network, no money.
+  - `scripts/selftest_actions.py` — 109 offline checks, no API key, no network, no money.
   - `scripts/try_actions.py` — the live harness (each tool on its own, or a whole spoken
     sentence through the agent). Dry-runs unless `--for-real`, same as `try_brain.py`.
 
