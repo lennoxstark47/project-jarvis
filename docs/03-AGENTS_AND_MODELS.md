@@ -41,6 +41,15 @@ tool-calling, smaller sizes run well on a laptop). Don't treat "which local mode
 as a decision to agonize over now — it's a config value in the router, exactly as
 cheap to swap as switching from Claude to GPT.
 
+**What actually got used (2026-09-08):** not Hermes. When the local backend was
+finally run for real — Ollama on a second machine on the LAN, GTX 1660 Ti with
+6 GB — the constraint turned out to be VRAM, not model family: at 6 GB you want
+roughly a 3B model at Q4. `granite4.1:3b` (2.1 GB, tool-calling declared and
+confirmed) answers a routing call in **0.7-3.7s**, against 40-100s on the hosted
+free tier that day. Hermes 3 was never pulled. The paragraph above is still the
+right explanation of *what* Hermes is; it just wasn't the answer here, and the
+reason is a number nobody could have guessed from the model's description.
+
 ## Model-agnostic by design
 
 Your instinct — "I can use either Claude or GPT or Ollama, we'll try what works

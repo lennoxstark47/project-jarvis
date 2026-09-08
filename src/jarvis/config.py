@@ -16,7 +16,7 @@ edit:
           "base_url": "https://integrate.api.nvidia.com/v1",
           "timeout": 60
         },
-        "ollama": {"model": "hermes3", "host": "http://localhost:11434"}
+        "ollama": {"model": "granite4.1:3b", "host": "http://localhost:11434"}
       }
     }
 
@@ -91,10 +91,15 @@ DEFAULTS: dict[str, Any] = {
             "timeout": 60,
         },
         "ollama": {
-            # hermes3 is Nous Research's tool-calling-tuned model (doc 03);
-            # llama3.1 and qwen2.5 are the obvious alternatives to compare
-            # against. Pull one first: `ollama pull hermes3`.
-            "model": "hermes3",
+            # granite4.1:3b, measured 2026-09-08: 2.1 GB, tool-calling declared
+            # and confirmed, and it answers a routing call in 0.7-3.7s on a
+            # GTX 1660 Ti — against 40-100s on the NVIDIA free tier that day.
+            # Doc 03 originally suggested hermes3 here; it was never pulled or
+            # run, and naming an uninstalled model as the default only produces
+            # a confusing "Ollama has no model" on a fresh config.
+            # `host` may be another machine on the LAN — set OLLAMA_HOST to
+            # 0.0.0.0:11434 there, since Ollama binds to localhost by default.
+            "model": "granite4.1:3b",
             "host": "http://localhost:11434",
         },
     },

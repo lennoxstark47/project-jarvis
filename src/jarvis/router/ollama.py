@@ -1,8 +1,9 @@
 """
 Local Ollama backend — Phase 2.
 
-The free/offline option from doc 03: a local tool-calling model (hermes3,
-llama3.1, qwen2.5, ...) served by Ollama on localhost. Talks to `/api/chat`
+The free/offline option from doc 03: a local tool-calling model (granite4.1,
+qwen3, llama3.1, ...) served by Ollama — on this machine or another one on the
+LAN. Talks to `/api/chat`
 over plain HTTP with `httpx` rather than adding an `ollama` package — the API
 is two fields wide and already a dependency of the anthropic SDK.
 
@@ -39,7 +40,7 @@ class OllamaBackend:
 
     def __init__(self, model: str | None = None, host: str | None = None) -> None:
         cfg = config.backend_config("ollama")
-        self.model = model or cfg.get("model", "hermes3")
+        self.model = model or cfg.get("model", "granite4.1:3b")
         self.host = (host or cfg.get("host", "http://localhost:11434")).rstrip("/")
 
     # -- translation ---------------------------------------------------------

@@ -394,7 +394,8 @@ Notes (2026-09-05):
    model than `meta/llama-3.3-70b-instruct` (it must be one that supports tool/function
    calling — that's the whole thing being tested). Same idea for `"claude"` / `"openai"`, or
    export `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `NVIDIA_API_KEY` instead.
-   For Ollama: `brew install ollama && ollama serve` then `ollama pull hermes3`.
+   For Ollama: `ollama serve` then `ollama pull granite4.1:3b` (see the Phase 3
+   "Local models" note — it can run on another machine on your LAN).
 3. **Test the brain on its own** (nothing opens — tools are dry-run by default):
    ```
    .venv/bin/python3 scripts/try_brain.py                          # every backend, both DoD commands
