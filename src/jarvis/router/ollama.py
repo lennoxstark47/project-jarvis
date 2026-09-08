@@ -2,10 +2,10 @@
 Local Ollama backend — Phase 2.
 
 The free/offline option from doc 03: a local tool-calling model (granite4.1,
-qwen3, llama3.1, ...) served by Ollama — on this machine or another one on the
-LAN. Talks to `/api/chat`
-over plain HTTP with `httpx` rather than adding an `ollama` package — the API
-is two fields wide and already a dependency of the anthropic SDK.
+qwen3, llama3.1, ...) served by Ollama, on this machine or another one on the
+LAN. Talks to `/api/chat` over plain HTTP with `httpx` rather than adding an
+`ollama` package — the API is two fields wide and already a dependency of the
+anthropic SDK.
 
 Ollama copied OpenAI's tool shape, with two differences that matter here:
 
@@ -14,8 +14,15 @@ Ollama copied OpenAI's tool shape, with two differences that matter here:
   synthesized locally (`ollama-0`, `ollama-1`, ...) and sent back as
   `tool_name` on the result message, which is what Ollama actually matches on.
 
-Local models are also slower and worse at tool use than the hosted ones (doc
-03's table says exactly this), so the timeout here is generous and the
+Doc 03 assumed local models would be the slow, weak option. Measured on
+2026-09-08, that is half wrong: `granite4.1:3b` on a six-year-old GPU one room
+away routes a command in **0.7-3.7s**, where the hosted free tier took 40-100s
+that day. It *is* worse at tool use — it needed sharper tool descriptions than
+the 20B model to stop confusing "open Claude Code" with running Claude Code —
+but on latency, local wins outright, and latency is what a push-to-talk
+assistant is judged on.
+
+The timeout below is still generous (a cold model has to load first) and the
 temperature is pinned to 0 — this call is a routing decision, not a creative one.
 """
 from __future__ import annotations
