@@ -772,6 +772,9 @@ directory up from what was said. Cause:
    *"the invoicing folder in Documents slash client work"*, *"the src folder in desktop
    slash project jarvis"*.
 
+**Fix confirmed by voice (2026-09-08):** same phrasing, and it opened
+`project_jarvis/docs` correctly.
+
 Worth noting what this bug looked like from outside: **nothing failed.** Claude Code opened,
 ran, and gave a good answer — because the repo root happens to contain `docs/`. A resolver
 that lands one directory up is invisible right until it isn't, which is why `resolve_spoken`

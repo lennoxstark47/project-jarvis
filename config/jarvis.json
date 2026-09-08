@@ -48,7 +48,9 @@
         "~/Projects",
         "~/code"
       ],
-      "aliases": {}
+      "aliases": {
+        "my thesis notes": "/Users/lennoxstark47/Desktop/project_jarvis/docs"
+      }
     }
   }
 }
