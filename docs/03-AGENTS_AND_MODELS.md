@@ -41,6 +41,28 @@ tool-calling, smaller sizes run well on a laptop). Don't treat "which local mode
 as a decision to agonize over now — it's a config value in the router, exactly as
 cheap to swap as switching from Claude to GPT.
 
+### Careful: "Hermes" now means two different things
+
+Everything above is about **Hermes the model series**. Since February 2026 there
+is also **Hermes Agent** — an open-source, self-hosted *agent framework* from the
+same lab (Nous Research), with a desktop app, multi-agent "profiles", a
+persistent fact store (SQLite + FTS5), MCP support, and support for any
+OpenAI-compatible endpoint including Ollama. Same name, same lab, completely
+different kind of thing: one is a set of weights you serve, the other is the
+scaffolding around a model.
+
+Where it belongs in this plan is **Phase 7**, not now. It is a framework, and the
+"Frameworks" section below is the reason that decision is deferred — adopting one
+today would mean discarding the router and loop that Phases 2-3 already proved.
+When Phase 7 arrives it goes on the shortlist next to LangGraph, CrewAI and the
+Claude Agent SDK. Two specific things to look at then rather than reinvent: its
+multi-agent profile model (Phase 7's actual problem) and its memory design, which
+is close to what doc 02 specifies for Phase 6.
+
+What it does **not** do is the part that makes Jarvis Jarvis: no microphone, no
+webcam, no menu-bar daemon, no spoken credentials. It is a text-agent framework.
+The overlap is the middle of the stack, not the ends.
+
 **What actually got used (2026-09-08):** not Hermes. When the local backend was
 finally run for real — Ollama on a second machine on the LAN, GTX 1660 Ti with
 6 GB — the constraint turned out to be VRAM, not model family: at 6 GB you want
