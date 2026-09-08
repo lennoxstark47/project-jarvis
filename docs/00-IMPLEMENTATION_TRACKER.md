@@ -8,8 +8,8 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus:** Phase 2 is ✅ Done. Ready to start Phase 3 — real actions & the
-Claude Code sub-agent.
+**Current focus:** Phase 3 is ✅ Done. Ready to start Phase 4 — voice out + credentialed
+login.
 
 **Status legend:** ☐ not started · 🔶 in progress · ✅ done · 🚫 blocked
 
@@ -428,15 +428,343 @@ Notes (2026-09-05):
 ---
 
 ## Phase 3 — Real actions & the Claude Code sub-agent
-Status: ☐ Not started
+Status: ✅ Done
 
-- ☐ `open_app` / `open_url` tool (real `open`/`osascript` calls)
-- ☐ `run_claude_code` tool (shells out to `claude` CLI, streams output, reports back)
-- ☐ Basic Playwright browser tool (opens a portal URL)
-- **Definition of done:** "open project X, use Claude Code to find this bug" runs end to end
+- ✅ `open_app` / `open_url` tool (real `open` calls) — shipped in Phase 2, unchanged;
+  see the osascript note below for why `osascript` was deliberately *not* added
+- ✅ `run_claude_code` tool (shells out to `claude` CLI, streams output, reports back) —
+  `src/jarvis/claude_code.py`, **proven live** (see the runs table below)
+- ✅ Project-name resolution + containment (`src/jarvis/projects.py`) — **not in the original
+  plan**, added because `run_claude_code` needs a directory and a voice transcript doesn't
+  have one; see the note below
+- ✅ Basic Playwright browser tool (opens a portal URL) — `src/jarvis/browser.py`,
+  **proven live** against a real login page
+- ✅ Live status line in the menu bar (doc 02's "running a sub-agent" surface) —
+  `on_status` through agent → tools → sub-agent, shown in `main.py`
+- ✅ **Definition of done:** "open project X, use Claude Code to find this bug" runs end to
+  end — met through the agent loop *and* confirmed by you through the microphone (below)
 
-Notes:
-- _(none yet)_
+Notes (2026-09-07):
+- **What was built:**
+  - `src/jarvis/claude_code.py` — the sub-agent launcher. Runs
+    `claude --print <task> --output-format stream-json --verbose --permission-mode <mode>
+    --permission-prompts none` in the project directory and reads the NDJSON event stream as
+    it arrives, so the menu bar can show what Claude Code is doing *right now* instead of
+    going quiet for minutes. Returns one paragraph (result + tool count + duration + cost +
+    session id) for the voice model to summarize.
+  - `src/jarvis/projects.py` — spoken name → directory, and the containment boundary.
+    Matches "project jarvis" against the immediate children of `actions.projects.roots`
+    (exact → unique substring → fuzzy), refuses ambiguity rather than guessing, and rejects
+    any path outside those roots. Explicit `actions.projects.aliases` win over the search and
+    may point outside (they're your decision, not the model's).
+  - `src/jarvis/browser.py` — the browser Jarvis can *see*, as opposed to `open_url`, which
+    hands a URL to macOS and forgets it. Persistent Chromium profile under `memory/browser`,
+    a long-lived window, and it reports the page title plus whether a password field is
+    present — which is exactly the hand-off point Phase 4's `fill_login_form` starts from.
+  - `src/jarvis/tools.py` — two new tools (`run_claude_code`, `open_portal`) and an
+    `on_status` parameter on every handler, so the slow ones can report progress.
+  - `config/jarvis.json` — a new `actions` block: `claude_code` (cli, permission_mode, model,
+    timeout, max_budget_usd, extra_args), `browser` (engine, headless, timeout, user_data_dir)
+    and `projects` (roots, aliases). Read fresh on every call, so changing the permission mode
+    takes effect on the next command rather than the next restart.
+  - `src/jarvis/main.py` — a "Status: ..." menu item fed by the agent's `on_status` callback,
+    with the same lock + main-thread-timer discipline Phase 1 established. Menu text is
+    truncated to 90 chars for display only (Claude Code returns paragraphs); the log keeps
+    the full text.
+  - `scripts/selftest_actions.py` — 103 offline checks (60 in round 1, the rest round 2), no API key, no network, no money.
+  - `scripts/try_actions.py` — the live harness (each tool on its own, or a whole spoken
+    sentence through the agent). Dry-runs unless `--for-real`, same as `try_brain.py`.
+
+- **Live results (2026-09-07).** Every row was actually run on this machine:
+
+  | what | result |
+  |---|---|
+  | `run_claude_code` direct: "what does src/jarvis/voice.py do?" | ✅ 18s, 2 tool calls, $0.21, correct answer |
+  | `open_portal https://github.com/login` | ✅ real Chromium window, title read, **password field detected** |
+  | **DoD, whole path:** "open project jarvis and use claude code to find out what the max steps limit in the agent loop is set to and why" | ✅ 54s — model emitted `run_claude_code(project='jarvis', task=...)`, Jarvis resolved `jarvis` → `~/Desktop/project_jarvis`, Claude Code ran there (6 tool calls, 37s, $0.30) and found `MAX_STEPS = 4` at `agent.py:43` with the right reasoning; Jarvis spoke an accurate one-liner |
+  | **DoD, open-ended version:** "...find this bug the menu bar icon sometimes does not appear when the app is launched at login" | ⚠ tool call correct, but hit the 600s timeout mid-investigation — see the finding below |
+
+- **⚠ The most important finding of this phase — a stopped sub-agent made the voice model
+  invent a root cause.** The open-ended run above ran 95 tool calls without finishing, Jarvis
+  stopped it at 600s as designed, and handed back the last thing Claude Code had *said*
+  ("Strong evidence now. Let me have Plan agents design the fix"). The small NVIDIA model,
+  given a narration and no conclusion, filled the gap: it confidently explained that the fix
+  was to move status-item creation into `applicationDidFinishLaunching` and call
+  `NSApp.activate(ignoringOtherApps:)` — **Swift/AppKit advice, for an app written in Python
+  with rumps.** Nothing in the tool result said any of that. A voice assistant that invents
+  findings out loud is worse than one that says it doesn't know, so this got fixed rather
+  than noted:
+  - `_summarize(..., partial=True)` now labels a stopped run as stopped, states outright that
+    it reached no conclusion, and presents its last line as a progress note rather than the
+    answer.
+  - The timeout message tells the model, in words, not to present anything below it as a
+    conclusion.
+  - `SYSTEM_PROMPT` gained a rule: report only what the tool actually returned, never invent
+    a finding, cause, file name or line of code; if the tool reached no conclusion, say so.
+  - `scripts/selftest_actions.py` pins all three, so this can't quietly regress.
+  Worth remembering as a general shape: **the small local-routing model will paper over a
+  thin tool result.** Any future tool whose output can be partial needs to say that it is.
+
+- **Deliberate deviation — no `osascript`.** `01-PHASE_PLAN.md` names "real `open`/`osascript`
+  calls" for `open_app`/`open_url`. `open -a` already both launches a cold app and brings a
+  running one to the front, so osascript would add nothing except risk: it takes a *script*
+  where `open` takes an argument, which is precisely the property that keeps a mis-transcribed
+  app name from becoming something executable. Left on `open`; noted in `tools.py` at the call
+  site so nobody "fixes" it later.
+
+- **Plan addition — `jarvis/projects.py` wasn't in the plan and had to be.** The plan says
+  `run_claude_code(project_path, task)`, but nothing spoken ever contains a path, and the
+  alternative — letting the model hand a raw path to a subprocess — is how a mis-transcribed
+  word ends up pointing an editing agent at your home directory. The roots list is the whole
+  containment story for this phase and the tests that matter most in
+  `selftest_actions.py` are the ones proving a path can't escape it. Doc 02's memory store
+  ("my project" → path, Phase 6) should feed this resolver rather than replace it.
+
+- **The safety posture, and the one word to change when you want more.**
+  `actions.claude_code.permission_mode` defaults to **`plan`**: Claude Code can read, search
+  and reason, but not edit. That's deliberate — this runs from a transcript that is sometimes
+  wrong, and an unattended edit to the wrong repo isn't something you notice mid-sentence.
+  Set it to `acceptEdits` when you want fixes instead of findings; everything else already
+  works, that flag is the only difference. `--permission-prompts none` is always passed so a
+  run can never block forever on a prompt nobody is there to answer.
+
+- **Cost and time, honestly.** A trivial question runs ~20-40s and ~$0.20-0.30 of Claude Code
+  usage. An open-ended "find this bug" exceeded 600s. There is an unused
+  `actions.claude_code.max_budget_usd` knob if that becomes a problem. The real fix for long
+  tasks — start the sub-agent, let go of it, and speak the answer when it lands — is a
+  background-task shape this phase doesn't have; flagged for Phase 8's latency pass rather
+  than smuggled in here.
+
+- **Install step this phase adds:** `playwright` is now in `requirements.txt`, but the browser
+  binaries are a *separate* download that pip does not do:
+  `.venv/bin/python3 -m playwright install chromium` (~95 MB). Already done on this machine.
+
+- **Voice path confirmed by you (2026-09-07), and it survived a mis-transcription.** Held F9,
+  said the DoD command; Whisper heard *"use **Cloud** Code"* rather than "Claude Code", and the
+  model routed to `run_claude_code` anyway — the system prompt's "interpret what the user
+  obviously meant" instruction earning its place. Claude Code ran in `project_jarvis` (3 tool
+  calls, 27s, $0.24) and found `MAX_STEPS = 4` at `agent.py:43`; Jarvis's spoken reply was
+  correct and grounded in what the tool actually returned. **~47s** wall clock from key release
+  to answer: ~1.8s Whisper, ~5.5s to pick the tool, 27s of Claude Code, ~3s to summarize.
+- **Handoff to Phase 4, spotted in that same run:** the reply came back as
+  ``The max step limit is defined as `MAX_STEPS = 4` in `src/jarvis/agent.py` at line 43.`` —
+  markdown backticks and a slash-separated path, which is fine in a menu bar and bad out loud,
+  even though `SYSTEM_PROMPT` already asks for neither. Phase 4 owns TTS, so it owns this: it
+  needs a "make this speakable" pass between the model's reply and the voice (strip markdown,
+  read paths as words or don't read them at all), not just a stronger prompt.
+- **Environment oddity seen once, recorded in case it recurs:** immediately after the
+  playwright install, every launch of `/opt/anaconda3/bin/python3` was SIGKILLed at exec —
+  `~/Library/Logs/DiagnosticReports/python3.12-*.ips` says `SIGKILL (Code Signature Invalid)`
+  / `Taskgated Invalid Signature`. `codesign -v` reported the binary as valid, and it started
+  working again on its own a couple of minutes later. Nothing in Jarvis caused or fixed it;
+  if a future session hits an inexplicable exit code 137 from the venv python, that's what it
+  is, and waiting it out worked.
+
+### Round 2 (2026-09-08) — make it visible, and let it ask where things are
+
+You asked for two changes after seeing round 1 work: the sub-agent should be *dramatic* — a
+real terminal window that opens, `cd`s into the project and runs Claude Code in front of you —
+and when Jarvis doesn't know where a project is, it should ask out loud and take your spoken
+answer. Both are built. You also chose, when I flagged it as fragile, that Jarvis should still
+relay the result even in the visible mode; that turned out to have a clean solution (below).
+
+- ✅ **Terminal mode** (`actions.claude_code.mode: "terminal"`, now the default) —
+  `src/jarvis/terminal.py` drives iTerm2 (or Terminal.app) over `osascript`: new window,
+  `cd '<project>'` on one line, `claude ... '<your task>'` on the next. This is what the phase
+  plan's "real `open`/`osascript` calls" bullet was actually for — round 1 dropped osascript
+  because `open -a` already launches and fronts an app, which was true and beside the point:
+  `open` can't type a command into the app it launched.
+- ✅ **It still reports back, without running anything twice.** Claude Code writes every
+  session to `~/.claude/projects/<slug>/<session-id>.jsonl` in the same event shapes
+  `--output-format stream-json` emits — so Jarvis picks the session id *before* launching
+  (`--session-id`) and tails that file. You get the window, Jarvis gets the stream, the live
+  status line and the answer. No scraping, no double cost.
+- ✅ **Knowing when an interactive session is done**, which is the one genuinely fuzzy part —
+  it never exits, it just goes quiet. The rule (`_transcript_settled`): quiet for
+  `quiet_seconds` **and** the last thing written was prose, not a tool call. The second half
+  matters because a session paused on a permission prompt is also perfectly quiet, and calling
+  that "finished" would have Jarvis announce an answer while Claude Code waits for a keypress.
+- ✅ **"Where is it?"** — `jarvis/followup.py` parks the request when a project can't be
+  resolved, and the *next* utterance gets one chance to be the answer. Resolved **locally, with
+  no model call at all**: `projects.resolve_spoken` walks the real filesystem one spoken
+  segment at a time (greedy longest-match, so "in Documents under client work" finds
+  `Documents/client work` and "in documents adobe" finds `Documents/Adobe`), and anything that
+  doesn't match something on disk resolves to nothing rather than to a plausible wrong path.
+  The answer is then saved as an alias, so a project is asked about exactly once.
+- ✅ **Argument hardening found on the way:** `tools.execute` now drops any argument a tool's
+  JSON Schema doesn't declare. This exists because `run_claude_code` gained a keyword-only
+  `directory` parameter (how the agent hands over a folder you just named out loud, bypassing
+  the roots check) — without the filter, a model could have passed `directory` itself and
+  walked straight through the containment boundary.
+
+**Live results (2026-09-08):**
+
+| what | result |
+|---|---|
+| terminal mode, direct | ✅ iTerm2 window opened in `project_jarvis`, ran, Jarvis followed the transcript live and spoke the answer (34s) |
+| **"where is it?" end to end** | ✅ "use claude code on my invoicing thing to find why totals are wrong" → not found → Jarvis asked → "it's in Documents slash client work slash invoicing" → resolved locally, alias saved, task ran there, answer spoken (87s) |
+| `allow_edits: false` | ✅ file byte-identical afterwards, bug still found and explained |
+| `allow_edits: true` | ✅ same task, file actually fixed |
+
+- **⚠⚠ The serious finding: what I told you about `plan` mode in round 1 was wrong.** I wrote
+  that `--permission-mode plan` meant Claude Code "can read, search and reason, but not edit",
+  and defaulted to it on that basis. It does not hold. A terminal-mode run under `plan`
+  rewrote `totals.py` in the test project — verified by md5, not by reading the transcript.
+  Nothing in your `~/.claude/settings.json` explains it; plan mode simply isn't a write
+  barrier in an interactive session. Two further attempts, each measured:
+  1. `--permission-mode plan` → **file modified.**
+  2. `+ --disallowedTools=Edit,Write,NotebookEdit,MultiEdit` → **file modified**, and Claude
+     Code said why in its own summary: *"Write and Edit are disabled in this session, so I
+     applied the change via Bash."* Removing the editing tools doesn't remove the ability to
+     edit, it reroutes it.
+  3. `+ --restricted --strict-mcp-config` (no Bash or other code-runners, file tools confined
+     to the working directory, MCP servers skipped) → **held.** Byte-identical file, bug still
+     correctly found and explained, and Claude Code told the user it couldn't apply the fix.
+  So the safety knob is now `actions.claude_code.allow_edits` (default false) and it applies
+  the whole set — see `READ_ONLY_FLAGS` in `jarvis/claude_code.py`, which carries this chain as
+  a comment so nobody re-weakens it. **The cost is real:** with the guard on, Claude Code has
+  no Bash and investigates with Read/Grep/Glob only. `permission_mode` is still a config
+  passthrough, but it's now documented as what Jarvis *asks* for, not what's enforced.
+  The general lesson, and it's the second time this phase has taught it: a safety property
+  nobody measured is a safety property you don't have.
+
+- **Bug found and fixed the expensive way — a variadic flag ate the prompt.**
+  `--disallowedTools` is documented as taking a "comma or space-separated" list, which means
+  it keeps consuming argv entries until the next flag. In terminal mode the task is the final
+  positional argument, so `--disallowedTools "Edit,Write" "<the task>"` swallowed the task
+  word by word. Reproduced exactly:
+  ```
+  $ claude --print --disallowedTools "Edit,Write" "reply with exactly the word BANANA"
+  Permission deny rule "reply" matches no known tool — check for typos.
+  Permission deny rule "with" matches no known tool — check for typos.
+  ...
+  $ claude --print --disallowedTools=Edit,Write "reply with exactly the word BANANA"
+  BANANA
+  ```
+  The symptom in Jarvis was indirect and would have been very hard to guess at: the session
+  transcript "never appeared", because Claude Code had started an interactive session with no
+  prompt at all. Fixed by using the `--flag=value` form, which takes exactly one value and can
+  sit anywhere in the command line. Pinned by a test that fails if the flag is ever split back
+  into two argv entries. **Rule for anything added here later: variadic CLI options must
+  always use the `=` form.**
+
+- **Deliberate scope call:** `jarvis/followup.py` is a slice of Phase 6's memory store taken
+  early, and it is kept as narrow as it can be — one pending question, about one thing, for
+  180 seconds, consumed exactly once. Both properties are there for a reason: an unanswered
+  question that never expired would silently attach itself to an unrelated sentence ten
+  minutes later and launch a coding agent on a task you'd forgotten about. When Phase 6
+  replaces this with something general, keep the expiry and the single-consumption.
+
+- **Housekeeping from this round:** the round-2 tests used a throwaway project at
+  `~/Documents/client work/invoicing` (a deliberately buggy `totals.py`). It has been deleted,
+  and the alias Jarvis learned for it removed from `config/jarvis.json`, so nothing points at
+  a folder that no longer exists.
+
+**Three bugs the first voice test of round 2 found (2026-09-08), all fixed:**
+
+1. **The "where is it?" flow never armed, because the model wouldn't call the tool.** Asked
+   *"use Claude Code on my thesis notes to explain what the phase plan covers"*, the model
+   replied *"I'm not sure where your thesis note is stored, so I can't read it — I don't have
+   a tool to retrieve that content."* No tool call, so nothing was parked, so the spoken
+   answer that followed had nothing to attach to and was treated as a fresh command. The
+   design assumed an unresolvable project would reach `projects.resolve` and fail there; it
+   never got that far. Fixed in the *description*, not the code: `run_claude_code` now says
+   outright that an unfamiliar project name is normal, that turning a name into a folder is
+   Jarvis's job, and that "I don't know where it is" is never a reason to skip the tool —
+   plus a matching line in `SYSTEM_PROMPT`. Verified by replaying the exact mis-transcribed
+   sentence: it now calls the tool and asks *"Please tell me where the 'my thesis note'
+   project is located on your Mac."*
+2. **Turns raced, and a stale one overwrote a fresh one.** Each utterance is handled on its
+   own thread (jarvis.voice spawns one per hotkey release), and the first command's summary
+   landed **32 seconds after** the next command had already been answered — replacing a
+   current reply with an old one in the menu bar. Fixed with a turn counter in `main.py`:
+   every utterance takes a number, the number rides on its handling thread, and only the
+   newest turn may write the reply or the status line.
+3. **Whisper kept mangling the one phrase that decides everything.** "Claude Code" came back
+   as *"CLOT code"*, *"slot code"* and *"plot code"* in three consecutive utterances. Added
+   `initial_prompt` to `jarvis/stt.py` with the handful of names Jarvis actually hears — a
+   Phase 1 file touched for a Phase 3 reason, noted here so it isn't a surprise.
+
+**Also observed, not fixed (Phase 8's territory):** one model call took **175 seconds** on the
+NVIDIA free tier, with an SDK retry in the middle. The sub-agent work is not the slow part —
+the free-tier routing calls around it are.
+
+### How to test Phase 3 (do these in order)
+
+1. **Offline, no key, no money** — resolution, containment, argv, stream parsing, dispatch:
+   ```
+   .venv/bin/python3 scripts/selftest_actions.py    # 103 checks, currently all passing
+   .venv/bin/python3 scripts/selftest_brain.py      # Phase 2's 29, still passing
+   ```
+2. **See what the model decides, without launching anything** (dry run is the default):
+   ```
+   .venv/bin/python3 scripts/try_actions.py
+   ```
+3. **Each tool on its own, for real** — a failure here is the tool's, not the model's:
+   ```
+   .venv/bin/python3 scripts/try_actions.py --project jarvis --for-real \
+       --claude-code "In one sentence, what does src/jarvis/voice.py do?"
+   .venv/bin/python3 scripts/try_actions.py --portal https://github.com/login --for-real
+   ```
+4. **The whole path, for real** — this is the Definition of done:
+   ```
+   .venv/bin/python3 scripts/try_actions.py --for-real \
+       "open project jarvis and use claude code to find out what the max steps limit in the agent loop is set to and why"
+   ```
+5. ✅ **Then the microphone** — `.venv/bin/python3 run.py`, hold F9, say *"open project jarvis
+   and use Claude Code to find out what the max steps limit in the agent loop is"*, and watch
+   the "Status:" line tick through Claude Code's tool calls before the "Jarvis:" line
+   answers. (Quit the launchd-started `dist/Jarvis.app` first or you'll have two Jarvises —
+   the Phase 1 mix-up.) **Done — confirmed by you, 2026-09-07** (round 1, headless mode).
+5b. ✅ **The round-2 microphone check — done, confirmed by you 2026-09-08.** Everything below has already been verified through
+   `scripts/try_actions.py` against this repo (2026-09-08) — what's left is doing it by voice.
+   `.venv/bin/python3 run.py`, then hold F9 and say:
+   - **Terminal mode:** *"open project jarvis and use Claude Code to say in one sentence what
+     the followup module does"* — an **iTerm2 window should open in front of you**, `cd` into
+     `project_jarvis` and run Claude Code with your words as its prompt. Watch the "Status:"
+     line track its tool calls, then Jarvis speaks the answer and the window stays open.
+   - **"Where is it?":** *"use Claude Code on my thesis notes to say in one sentence what the
+     phase plan document covers"* — "thesis notes" is in none of the roots, so Jarvis asks.
+     Answer on the next F9 press: *"it's in Desktop slash project jarvis slash docs"*. It
+     should resolve locally (no model call), open a window **in `docs`**, and answer.
+     Afterwards, clear the junk alias it learned: `actions.projects.aliases` in
+     `config/jarvis.json`.
+
+   **Pick the project name carefully when testing this second one.** The obvious phrasings
+   don't trigger it: asked about "the jarvis source", the model shortened it to `jarvis`,
+   which resolves to the repo root, and no question was ever asked. It has to be a name that
+   can't be normalized into something sitting in a configured root.
+
+   **Known cosmetic wart, seen live:** the question Jarvis actually asked was *"I couldn't
+   find a project named thesis notes — please tell me the correct project name"*, not "where
+   is it?". The small model paraphrases the instruction in the tool result. It doesn't break
+   anything (the next utterance is parsed locally as a location regardless of how the question
+   came out), but it's misleading — a prompt fix for whenever the wording is next touched.
+
+   **Result (2026-09-08), all three by voice:**
+   - *"Open project Jarvis and use Claude Code to say in one sentence what the follow-up
+     module does"* — Whisper got "Claude Code" right this time (the `initial_prompt` fix),
+     iTerm2 opened in `project_jarvis`, Claude Code read `followup.py`, answer spoken. ✅
+   - *"Use Claude Code on my thesis note to say what the phase plan covers"* — the model
+     called the tool on an unknown project (the fix), and Jarvis parked the question:
+     `waiting to be told where 'thesis note' is`. ✅
+   - *"It's inside the project jarvis folder inside the Docs folder"* — **no "slash" spoken at
+     all**, and it resolved anyway, in **29 milliseconds with no model call**
+     (12:04:47,957 transcript → 12:04:47,986 resolved). Alias learned, iTerm2 opened in
+     `docs`, Claude Code read `01-PHASE_PLAN.md` and summarized it. ✅
+   - The turn-ordering fix fired twice and correctly: `dropping a stale reply — you've spoken
+     since`, once for an overtaken summary and once for a question that arrived after its own
+     answer was already running.
+
+   **The one number worth remembering from this run:** local resolution of the spoken location
+   took **29 ms**; the model calls around it took **91 seconds** each at their worst (NVIDIA
+   free tier, with SDK retries). Everything Jarvis does itself is instant. Everything it asks
+   the free tier to do is not. That is the whole of Phase 8's latency problem in one log.
+6. ☐ **Then the packaged app.** As in Phase 2, no `build_app.sh` rebuild is needed — the
+   bundle loads `run.py` fresh from disk and gets the venv's site-packages via `PYTHONPATH`.
+   One thing to actually check rather than assume: `launchd` gives the process a much shorter
+   `PATH` than your shell, so if `claude` can't be found there, put its full path in
+   `actions.claude_code.cli` (`which claude` → `/Users/<you>/.local/bin/claude`).
 
 ---
 

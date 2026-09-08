@@ -1,5 +1,5 @@
 """
-Jarvis's tool contract — Phase 2.
+Jarvis's tool contract — Phases 2-3.
 
 This module is the *entire* set of things Jarvis is able to do. One schema per
 tool, described in backend-neutral JSON Schema; each backend in
@@ -7,22 +7,34 @@ tool, described in backend-neutral JSON Schema; each backend in
 "fixed small tool list" from docs/01-PHASE_PLAN.md — it grows only when a phase
 explicitly adds a tool, never opportunistically.
 
-Phase 2 deliberately ships only the two safest actions (per the phase plan:
-"No actual system actions yet except the safest one: opening a URL or app").
-`run_claude_code`, Playwright browsing, and `fill_login_form` are Phases 3-4.
+- Phase 2 shipped `open_url` / `open_app`: the safest possible actions, both
+  shelling out to macOS's `open`, which hands its argument to LaunchServices
+  rather than a shell, so a mis-transcribed command can't become code execution.
+- Phase 3 adds `run_claude_code` (the sub-agent — jarvis.claude_code) and
+  `open_portal` (the driveable browser — jarvis.browser).
+- `fill_login_form` is Phase 4's, and lives in doc 04 until then.
 
-Both tools shell out to macOS's `open`, which is why they're safe: `open` hands
-the argument to LaunchServices rather than a shell, so a mis-transcribed
-command can't turn into command execution.
+The bodies of the two Phase 3 tools are in their own modules; what lives here
+is the contract and the dispatch, so the list of what Jarvis can do stays
+readable in one screen.
+
+**Status callbacks.** `run_claude_code` can take minutes. Every handler
+therefore accepts an optional `on_status` callable and the slow ones call it as
+they go, which is what lets the menu bar show progress instead of looking hung
+(doc 02's output layer). Handlers that finish instantly accept it and ignore it,
+so dispatch stays uniform.
 """
 from __future__ import annotations
 
 import logging
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger("jarvis.tools")
+
+StatusFn = Callable[[str], None]
 
 # How long to wait on `open`. It returns as soon as LaunchServices accepts the
 # request (it doesn't wait for the app to finish launching), so this only trips
@@ -78,6 +90,78 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "run_claude_code",
+        "description": (
+            "Hand a coding task to Claude Code — the user's AI coding agent — inside "
+            "one of their projects, and report back what it found or changed. Use "
+            "this whenever the request is about code, files or documents inside one "
+            "of the user's projects: finding a bug, investigating why something "
+            "breaks, explaining or changing code, reading what a document says. It "
+            "can take several minutes, which is expected. Do not use it to open an "
+            "app or a web page.\n\n"
+            "Call this even when you have never heard of the project the user named "
+            "and have no idea where it is. Turning a spoken project name into a "
+            "folder is Jarvis's job, not yours: it searches the user's project "
+            "folders, and if it still can't find it, it asks the user out loud and "
+            "handles the answer. Never reply that you cannot do something because "
+            "you don't know where a project is, or because you have no tool for it "
+            "— call this tool and let it resolve."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Which project to work in, as the user named it out loud "
+                        "(e.g. 'project jarvis', 'the billing service', 'my thesis "
+                        "notes'). A project name, not a file path — Jarvis matches "
+                        "it against the user's project folders itself. Pass whatever "
+                        "the user called it even if it means nothing to you; an "
+                        "unfamiliar name is normal and is not a reason to skip the "
+                        "tool."
+                    ),
+                },
+                "task": {
+                    "type": "string",
+                    "description": (
+                        "The complete task to give Claude Code, written out as an "
+                        "instruction. Claude Code cannot hear the user and sees "
+                        "nothing except this text, so include every detail of the "
+                        "problem the user described — symptoms, file or function "
+                        "names, error messages — rather than a short paraphrase."
+                    ),
+                },
+            },
+            "required": ["project", "task"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "open_portal",
+        "description": (
+            "Open a web page in Jarvis's own automated browser, which Jarvis can see "
+            "and act on afterwards. Use this when the user wants Jarvis to *do* "
+            "something on the page — log in to a portal, fill something in — rather "
+            "than just look at it. For a page the user only wants to read, use "
+            "open_url instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "The full URL of the portal or page, including the scheme, "
+                        "e.g. 'https://portal.example.com'."
+                    ),
+                }
+            },
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 TOOL_NAMES = [spec["name"] for spec in TOOL_SPECS]
@@ -124,27 +208,121 @@ def _run_open(args: list[str], *, dry_run: bool) -> tuple[bool, str]:
     return True, ""
 
 
-def open_url(url: str, *, dry_run: bool = False) -> str:
+def open_url(url: str, *, dry_run: bool = False, on_status: StatusFn | None = None) -> str:
     url = normalize_url(url)
     logger.info("tool open_url(%r)", url)
     ok, detail = _run_open([url], dry_run=dry_run)
     return f"{detail}Opened {url}" if ok else f"Could not open {url}: {detail}"
 
 
-def open_app(name: str, *, dry_run: bool = False) -> str:
+def open_app(name: str, *, dry_run: bool = False, on_status: StatusFn | None = None) -> str:
     name = name.strip()
     logger.info("tool open_app(%r)", name)
+    # `open -a` both launches a cold app and brings a running one to the front,
+    # so the osascript `activate` the phase plan mentions as an alternative buys
+    # nothing here — and osascript takes a *script*, where `open` takes an
+    # argument, so staying on `open` keeps a mis-transcribed app name from being
+    # anything more dangerous than a name that doesn't exist.
     ok, detail = _run_open(["-a", name], dry_run=dry_run)
     return f"{detail}Opened {name}" if ok else f"Could not open {name}: {detail}"
+
+
+def run_claude_code(
+    project: str,
+    task: str,
+    *,
+    directory: "Path | None" = None,
+    dry_run: bool = False,
+    on_status: StatusFn | None = None,
+) -> str:
+    """Resolve the project name, then hand the task to the Claude Code sub-agent.
+
+    `directory` skips resolution for a caller that has already worked the folder
+    out through a trusted route — specifically jarvis.agent, after you said out
+    loud where the project is. It is keyword-only and deliberately **not** in
+    this tool's JSON Schema, and `execute()` drops arguments that aren't in the
+    schema, so a model cannot reach it and hand a subprocess a path of its own
+    choosing. That's the containment boundary; this is the one door through it,
+    and a person is what opens it.
+
+    Imported lazily so that a broken/missing `claude` CLI can only ever affect
+    the command that asked for it, the way the router treats vendor SDKs.
+    """
+    from jarvis import claude_code, followup, projects
+
+    logger.info("tool run_claude_code(project=%r, task=%r)", project, task)
+    if directory is not None:
+        return _hand_over(directory, task, dry_run=dry_run, on_status=on_status)
+
+    try:
+        directory = projects.resolve(project)
+    except projects.ProjectError as exc:
+        # A resolution failure is a *question for the user* ("where is it?"),
+        # not a crash. Park the request so the next thing they say can be the
+        # answer (jarvis.followup), and hand the model the wording to ask with.
+        followup.ask_where(project, task)
+        return (
+            f"{exc} Ask the user where it is, in one short sentence, and say nothing else — "
+            f"their next words will be the answer and I'll handle it."
+        )
+
+    return _hand_over(directory, task, dry_run=dry_run, on_status=on_status)
+
+
+def _hand_over(
+    directory: "Path", task: str, *, dry_run: bool, on_status: StatusFn | None
+) -> str:
+    from jarvis import claude_code
+
+    try:
+        return claude_code.run(directory, task, dry_run=dry_run, on_status=on_status)
+    except claude_code.ClaudeCodeError as exc:
+        return str(exc)
+
+
+def open_portal(url: str, *, dry_run: bool = False, on_status: StatusFn | None = None) -> str:
+    from jarvis import browser
+
+    try:
+        return browser.open_portal(url, dry_run=dry_run, on_status=on_status)
+    except browser.BrowserError as exc:
+        return f"I couldn't open that in my own browser: {exc}"
 
 
 HANDLERS: dict[str, Callable[..., str]] = {
     "open_url": open_url,
     "open_app": open_app,
+    "run_claude_code": run_claude_code,
+    "open_portal": open_portal,
 }
 
 
-def execute(name: str, arguments: dict[str, Any], *, dry_run: bool = False) -> str:
+def _only_declared(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Keep just the arguments this tool's schema declares.
+
+    Models invent parameters, and a handler may have keyword arguments that are
+    deliberately not offered to them (`run_claude_code`'s `directory`, which
+    bypasses the project-containment check). Filtering here means the schema is
+    the *whole* of what a model can reach, rather than a suggestion that happens
+    to line up with the Python signature.
+    """
+    spec = next((item for item in TOOL_SPECS if item["name"] == name), None)
+    if spec is None:
+        return dict(arguments)
+    allowed = set(spec["parameters"]["properties"])
+    unexpected = set(arguments) - allowed
+    if unexpected:
+        logger.warning("dropping undeclared argument(s) %s for %s", sorted(unexpected), name)
+    return {key: value for key, value in arguments.items() if key in allowed}
+
+
+def execute(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    dry_run: bool = False,
+    on_status: StatusFn | None = None,
+) -> str:
     """Run tool `name` with `arguments`, returning a result string for the model.
 
     Never raises: a tool failure is information the model should get back and
@@ -156,8 +334,9 @@ def execute(name: str, arguments: dict[str, Any], *, dry_run: bool = False) -> s
         logger.warning("model asked for unknown tool %r", name)
         return f"Error: no such tool {name!r}. Available tools: {', '.join(TOOL_NAMES)}."
 
+    arguments = _only_declared(name, arguments)
     try:
-        return handler(**arguments, dry_run=dry_run)
+        return handler(**arguments, dry_run=dry_run, on_status=on_status)
     except TypeError as exc:
         # Wrong/missing arguments from the model — tell it precisely that, so it
         # can retry with the right shape instead of the loop dying.

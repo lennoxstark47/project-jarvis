@@ -26,8 +26,14 @@ works best.
 
 ## Current status
 
-Planning stage — no code yet. These docs are the spec we'll build against. Expect
-to revise them as Phase 1 teaches us things the plan got wrong (it will).
+Phases 0-3 are built and running: a menu-bar background app with mic/camera access,
+push-to-talk voice capture with local Whisper transcription, a model-agnostic brain
+that turns a transcript into a tool call, and an action layer that opens apps and
+URLs, drives its own browser, and hands coding tasks to Claude Code as a sub-agent.
+Voice out and credentialed login are next (Phase 4).
+
+`docs/00-IMPLEMENTATION_TRACKER.md` is the authoritative, per-task version of this
+— including what's been proven live versus only written.
 
 ## Decisions already locked in
 

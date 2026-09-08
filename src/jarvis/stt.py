@@ -26,6 +26,17 @@ logger = logging.getLogger("jarvis.stt")
 # out to matter more than latency once real commands are being parsed.
 MODEL_SIZE = "base.en"
 
+# Whisper accepts a hint of what the audio is likely to contain, which biases
+# decoding towards those words. Every command to Jarvis is drawn from a tiny
+# vocabulary, and the words it kept getting wrong were the ones that matter
+# most: "Claude Code" came back as "CLOT code", "slot code" and "plot code"
+# across three consecutive utterances (2026-09-08), each of which changes what
+# the request means. Names go here; ordinary English doesn't need the help.
+INITIAL_PROMPT = (
+    "Jarvis, Claude Code, project jarvis, GitHub, Playwright, Whisper, "
+    "open the portal, run Claude Code on my project, it's in Documents."
+)
+
 _model = None
 
 
@@ -66,6 +77,7 @@ def transcribe(audio: np.ndarray, samplerate: int = 16000) -> str:
             # itself a repetition-loop contributor.
             vad_filter=True,
             condition_on_previous_text=False,
+            initial_prompt=INITIAL_PROMPT,
         )
         text = " ".join(segment.text.strip() for segment in segments).strip()
         return text

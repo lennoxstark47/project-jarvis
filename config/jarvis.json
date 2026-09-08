@@ -20,5 +20,35 @@
       "model": "hermes3",
       "host": "http://localhost:11434"
     }
+  },
+  "actions": {
+    "claude_code": {
+      "cli": "claude",
+      "mode": "terminal",
+      "terminal_app": "auto",
+      "quiet_seconds": 20,
+      "allow_edits": false,
+      "permission_mode": "plan",
+      "model": null,
+      "timeout": 600,
+      "max_budget_usd": null,
+      "extra_args": []
+    },
+    "browser": {
+      "engine": "chromium",
+      "headless": false,
+      "timeout": 30,
+      "user_data_dir": "memory/browser"
+    },
+    "projects": {
+      "roots": [
+        "~/Desktop",
+        "~/Documents",
+        "~/Developer",
+        "~/Projects",
+        "~/code"
+      ],
+      "aliases": {}
+    }
   }
 }

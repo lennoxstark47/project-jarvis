@@ -16,6 +16,12 @@ request for one of Jarvis's tools (jarvis.tools) or just something to reply to,
 and both the reply and any action taken show up in the menu bar. Which backend
 answers is a config/jarvis.json setting, not a code change (jarvis.router).
 
+Phase 3 gave those tools real weight - one of them launches Claude Code and can
+run for minutes - so the menu bar grew a live status line fed by the agent's
+on_status callback. That's doc 02's "listening / thinking / speaking / running a
+sub-agent" surface, and the reason a long sub-agent call doesn't look like a
+hang.
+
 Run during development with:
 
     source .venv/bin/activate
@@ -64,6 +70,12 @@ TRANSCRIPT_UI_POLL_INTERVAL = 0.25
 # Menu bar placeholders, also what the labels revert to on a fresh launch.
 NO_TRANSCRIPT = "(none yet)"
 NO_REPLY = "(nothing yet)"
+IDLE_STATUS = "idle"
+
+# Menu items are one line in a dropdown, and Phase 3's tools return whole
+# paragraphs (Claude Code summarizes what it found). Truncate for display only -
+# logs/jarvis.log keeps the full text.
+MENU_TEXT_LIMIT = 90
 
 
 class JarvisApp(rumps.App):
@@ -71,11 +83,13 @@ class JarvisApp(rumps.App):
         super().__init__("Jarvis", icon=None, quit_button="Quit Jarvis")
         self.transcript_item = rumps.MenuItem(f"Last transcript: {NO_TRANSCRIPT}")
         self.reply_item = rumps.MenuItem(f"Jarvis: {NO_REPLY}")
+        self.status_item = rumps.MenuItem(f"Status: {IDLE_STATUS}")
         self.menu = [
             "Check Permissions",
             f"Hold {HOTKEY_NAME.upper()} to talk",
             self.transcript_item,
             self.reply_item,
+            self.status_item,
         ]
         self._status_item_elapsed = 0.0
         self._status_item_ever_on_screen = False
@@ -92,12 +106,25 @@ class JarvisApp(rumps.App):
         self._displayed_transcript = NO_TRANSCRIPT
         self._latest_reply = NO_REPLY
         self._displayed_reply = NO_REPLY
+        self._latest_status = IDLE_STATUS
+        self._displayed_status = IDLE_STATUS
+
+        # Each utterance is handled on its own thread (jarvis.voice spawns one
+        # per hotkey release), so two can be in flight at once and they do not
+        # finish in order. Seen live 2026-09-08: an utterance whose sub-agent
+        # ran long had its summary land 32 seconds *after* the next command had
+        # already been answered, overwriting a fresh reply with a stale one.
+        # Every turn takes a number; only the newest one may write to the UI.
+        # The number travels on the handling thread, which is also the thread
+        # the agent and its tools run their status callbacks from.
+        self._newest_turn = 0
+        self._turn = threading.local()
 
         # The brain. Constructed here but not connected to anything until the
         # first utterance - jarvis.agent builds the backend (and reads its API
         # key) lazily, so a missing key surfaces as a spoken-style error on the
         # first command rather than a crash at launch.
-        self.agent = Agent()
+        self.agent = Agent(on_status=self.set_status)
 
     # -- permission check ---------------------------------------------------
 
@@ -145,15 +172,52 @@ class JarvisApp(rumps.App):
         freeze the menu bar for its duration.
         """
         with self._transcript_lock:
+            self._newest_turn += 1
+            self._turn.id = self._newest_turn
             self._latest_transcript = text if text else "(heard nothing)"
 
         if not text:
             return
 
-        result = self.agent.handle(text)
-        logger.info("agent: %s", result.summary())
+        try:
+            result = self.agent.handle(text)
+            logger.info("agent: %s", result.summary())
+            with self._transcript_lock:
+                if self._is_newest():
+                    self._latest_reply = result.reply or self._describe_actions(result)
+                else:
+                    logger.info("dropping a stale reply — you've spoken since.")
+        finally:
+            # Whatever happened, stop claiming Jarvis is still working on it -
+            # a status line stuck on "Claude Code: Read agent.py" is exactly the
+            # hung-looking UI this was added to prevent. Routed through
+            # set_status so an overtaken turn can't clear a newer turn's status
+            # on its way out.
+            self.set_status(IDLE_STATUS)
+
+    def _is_newest(self) -> bool:
+        """Whether the calling thread is handling the most recent utterance.
+
+        Caller must hold ``_transcript_lock``. A turn that is no longer newest
+        has been overtaken by something the user said more recently, and has no
+        business writing to the menu bar any more.
+        """
+        return getattr(self._turn, "id", 0) == self._newest_turn
+
+    def set_status(self, message: str) -> None:
+        """Show what Jarvis is doing right now. Called from background threads.
+
+        Same lock-and-poll discipline as the transcript: only a plain string is
+        written here, and the main-thread timer is what touches the menu item.
+        """
         with self._transcript_lock:
-            self._latest_reply = result.reply or self._describe_actions(result)
+            if self._is_newest():
+                self._latest_status = message or IDLE_STATUS
+
+    @staticmethod
+    def _shorten(text: str) -> str:
+        text = " ".join((text or "").split())
+        return text if len(text) <= MENU_TEXT_LIMIT else text[: MENU_TEXT_LIMIT - 3] + "..."
 
     @staticmethod
     def _describe_actions(result) -> str:
@@ -166,12 +230,16 @@ class JarvisApp(rumps.App):
         with self._transcript_lock:
             text = self._latest_transcript
             reply = self._latest_reply
+            status = self._latest_status
         if text != self._displayed_transcript:
             self._displayed_transcript = text
-            self.transcript_item.title = f"Last transcript: {text}"
+            self.transcript_item.title = f"Last transcript: {self._shorten(text)}"
         if reply != self._displayed_reply:
             self._displayed_reply = reply
-            self.reply_item.title = f"Jarvis: {reply}"
+            self.reply_item.title = f"Jarvis: {self._shorten(reply)}"
+        if status != self._displayed_status:
+            self._displayed_status = status
+            self.status_item.title = f"Status: {self._shorten(status)}"
 
     def _startup_check(self, timer: rumps.Timer) -> None:
         """Run the startup permission check once, from inside the run loop.

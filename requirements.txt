@@ -18,3 +18,12 @@ pynput>=1.7.6
 # httpx (already pulled in by the anthropic SDK).
 anthropic>=1.0.0
 openai>=1.0.0
+
+# Phase 3 - the action layer. Playwright drives the browser Jarvis can see and
+# act on (jarvis/browser.py), as opposed to `open`, which hands a URL to macOS
+# and forgets it. The browser binaries are a separate download and are NOT
+# installed by pip:
+#     .venv/bin/python3 -m playwright install chromium
+# The Claude Code sub-agent (jarvis/claude_code.py) needs no package at all -
+# it shells out to the `claude` CLI, which is installed independently.
+playwright>=1.40

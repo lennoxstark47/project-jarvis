@@ -79,17 +79,63 @@ exists to run it in one command.
 
 **Goal:** the two example commands from your original ask both work end to end.
 
-- `open_app` / `open_url` tool: real `open`/`osascript` calls.
+- `open_app` / `open_url` tool: real `open` calls. (Amended 2026-09-07: this
+  originally said "`open`/`osascript`". `open -a` already both launches a cold app
+  and fronts a running one, and osascript takes a *script* where `open` takes an
+  argument — so staying on `open` is what keeps a mis-transcribed app name from
+  being executable. No osascript was added.)
 - `run_claude_code` tool: shells out to the Claude Code CLI in a target project
   directory with a task prompt (e.g. "find and fix this bug"), streams its output
   back, and reports completion. This is Jarvis's first *sub-agent* — it doesn't
   need to know how Claude Code works internally, only how to launch it and relay
   the result.
+- **Added 2026-09-07: spoken project name → directory, with a containment
+  boundary.** The bullet above says `run_claude_code(project_path, task)`, but a
+  voice transcript never contains a path, and letting the model hand a raw path to
+  a subprocess is how one mis-transcribed word points an editing agent at your home
+  directory. So a resolver (`jarvis/projects.py`) matches spoken names against the
+  immediate children of configured project roots and refuses anything outside them.
+  Doc 02's memory store (Phase 6) should feed this resolver, not replace it.
 - Basic browser automation tool (Playwright) for "open this portal" style commands,
   landing on the page — login itself is Phase 4.
+- **Added 2026-09-07: a live status line in the menu bar.** Doc 02's output layer
+  asks for a "running a sub-agent" surface, and this is the first phase with a tool
+  that runs for minutes — without it, a working sub-agent and a hung Jarvis look
+  identical. Implemented as an `on_status` callback threaded agent → tools →
+  sub-agent, so Phase 4's TTS can subscribe to the same stream.
 
 **Definition of done:** "open project X, use Claude Code to find this bug" actually
 launches Claude Code against project X with your spoken description as the prompt.
+
+**Amended 2026-09-08 — the sub-agent is *visible* by default.** Round 1 ran Claude
+Code headless and only spoke the result. On seeing that, the user asked for the
+dramatic version instead: a real terminal window that opens, `cd`s into the
+project and runs Claude Code in front of them, so they can watch and take the
+keyboard. That's `actions.claude_code.mode: "terminal"`, and it's the default;
+`"headless"` keeps the old behaviour. It still reports back — Jarvis picks the
+session id before launching and tails Claude Code's own session transcript, so
+the visible window costs nothing in relayed detail.
+
+**Also added 2026-09-08: Jarvis asks where a project is, out loud.** When a name
+doesn't resolve, the request is parked (`jarvis/followup.py`) and the next thing
+said gets one chance to be the answer, resolved locally against the real
+filesystem and then remembered as an alias. This is a deliberately narrow slice
+of Phase 6's memory store, taken early because the alternative — "I couldn't find
+that" and a dead end — made the sub-agent unusable for any project not sitting in
+a configured root.
+
+**Safety decision, corrected 2026-09-08 (this is the important one).** The plan
+said, and this doc previously recorded, that the sub-agent defaults to Claude
+Code's `plan` permission mode — "read and reason, don't edit". **That was
+measured and it is false**: under `plan`, a terminal-mode run rewrote a source
+file. Nor was removing the write tools enough — Claude Code used Bash instead and
+said so. What actually holds is `--restricted --strict-mcp-config
+--disallowedTools=Edit,Write,...`, verified by md5 on the same task. The knob is
+now `actions.claude_code.allow_edits` (default false), and turning it true is how
+you get an agent that fixes rather than one that finds. The cost of false is that
+Claude Code loses Bash and investigates with Read/Grep/Glob only. Any future
+phase that adds a "safe mode" to anything should take the lesson rather than the
+flags: a safety property nobody measured is a safety property you don't have.
 
 ---
 

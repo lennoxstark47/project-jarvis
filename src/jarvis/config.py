@@ -1,5 +1,5 @@
 """
-Configuration & API-key resolution — Phase 2.
+Configuration & API-key resolution — Phases 2-3.
 
 Everything Jarvis needs to pick a brain lives in one JSON file,
 `config/jarvis.json` (created on first read with the defaults below), so
@@ -19,6 +19,11 @@ edit:
         "ollama": {"model": "hermes3", "host": "http://localhost:11434"}
       }
     }
+
+Phase 3 added an `actions` block to the same file — what Jarvis is allowed to
+*do* (which projects `run_claude_code` may touch, what permissions the Claude
+Code sub-agent runs with, how the browser is launched), as opposed to which
+model decides to do it.
 
 See DEFAULTS below for what each field means and why it's set the way it is;
 a file that only overrides some of them still inherits the rest.
@@ -93,6 +98,84 @@ DEFAULTS: dict[str, Any] = {
             "host": "http://localhost:11434",
         },
     },
+    # Phase 3's action layer. Everything here is about what Jarvis is allowed to
+    # *do*, as opposed to which model decides to do it.
+    "actions": {
+        "claude_code": {
+            # The CLI to launch. A full path works if `claude` isn't on the PATH
+            # the app inherits (a launchd-started process has a much shorter
+            # PATH than your shell — check logs/jarvis.log if it can't find it).
+            "cli": "claude",
+            # "terminal": open a real terminal window, cd into the project and
+            # run an interactive Claude Code session you can watch and take
+            # over. "headless": run it invisibly and only report the answer.
+            # Terminal mode still reports back — it tails the session's own
+            # transcript rather than the process's stdout (jarvis/claude_code.py).
+            "mode": "terminal",
+            # Which terminal to drive in that mode: "auto" (iTerm2 if installed,
+            # else Terminal.app), "iTerm2", or "Terminal". macOS will ask for
+            # Automation permission the first time.
+            "terminal_app": "auto",
+            # Terminal mode only. An interactive session never exits, so
+            # "finished" means: it wrote prose (not a tool call) and has been
+            # quiet this many seconds. Raise it if Jarvis speaks too early on
+            # tasks with long pauses.
+            "quiet_seconds": 20,
+            # THE safety knob. false runs Claude Code with --restricted
+            # --strict-mcp-config --disallowedTools=Edit,Write,... so a misheard
+            # command investigates and reports instead of rewriting something.
+            # Set it true when you want fixes rather than findings; the cost of
+            # false is that Claude Code loses Bash, so it investigates with
+            # Read/Grep/Glob only.
+            #
+            # Those exact flags are what survived testing. Two weaker guards
+            # were tried on 2026-09-08 and both let a source file get rewritten:
+            # --permission-mode plan, and then removing the write tools (which
+            # Claude Code routed around with Bash, and told us it had). See
+            # READ_ONLY_FLAGS in jarvis/claude_code.py.
+            "allow_edits": False,
+            # Passed through to --permission-mode. What Jarvis *asks* for, not
+            # what's enforced — see allow_edits above. Accepted values are the
+            # CLI's: plan, acceptEdits, auto, manual, dontAsk, bypassPermissions.
+            "permission_mode": "plan",
+            # null = whatever model the CLI is configured to use.
+            "model": None,
+            # Seconds before Jarvis stops the sub-agent and reports how far it
+            # got. Real tasks take minutes, hence 10x the model-call timeout.
+            "timeout": 600,
+            # Optional hard spend cap per run (passed as --max-budget-usd).
+            # null = no cap. A short investigation ran ~$0.16 in testing.
+            "max_budget_usd": None,
+            # Anything else to append to the argv, e.g. ["--add-dir", "/path"].
+            "extra_args": [],
+        },
+        "browser": {
+            # Playwright engine: chromium, firefox or webkit. Whichever you pick
+            # must have been downloaded: `python3 -m playwright install <name>`.
+            "engine": "chromium",
+            # False so you can watch it and take over — the whole point of
+            # open_portal (vs open_url) is a page Jarvis and you share.
+            "headless": False,
+            # Per-navigation timeout in seconds.
+            "timeout": 30,
+            # Persistent profile: cookies and logins survive restarts, so Phase
+            # 4's login happens once per site rather than every morning. Holds
+            # real session cookies — keep it under memory/, which is gitignored.
+            "user_data_dir": "memory/browser",
+        },
+        "projects": {
+            # Where run_claude_code is allowed to work, and the only folders a
+            # spoken project name is matched against. Immediate children only.
+            # This is the containment boundary for the one tool that can change
+            # files — see jarvis/projects.py.
+            "roots": ["~/Desktop", "~/Documents", "~/Developer", "~/Projects", "~/code"],
+            # Explicit spoken-name -> path overrides, for a project whose folder
+            # name is nothing like what you call it out loud. These are trusted
+            # by name (they're your decision, not the model's) so they may point
+            # outside the roots above.
+            "aliases": {},
+        },
+    },
 }
 
 # env var checked first for each backend's key
@@ -141,8 +224,49 @@ def backend_config(name: str) -> dict[str, Any]:
     return load_config().get("backends", {}).get(name, {})
 
 
+def actions_config(name: str) -> dict[str, Any]:
+    """One entry from the `actions` block ("claude_code", "browser", "projects").
+
+    Read on every call rather than cached, so editing config/jarvis.json — the
+    permission mode especially — takes effect on the next command instead of
+    the next restart.
+    """
+    return load_config().get("actions", {}).get(name, {})
+
+
 def default_backend() -> str:
     return load_config().get("backend", DEFAULTS["backend"])
+
+
+def save_alias(name: str, path: str | Path) -> bool:
+    """Record `name` -> `path` in config/jarvis.json's actions.projects.aliases.
+
+    Written back into the *user's* file rather than the merged defaults, so
+    nothing they've edited gets flattened by a value they never set. This is how
+    "where is that project?" only ever has to be asked once — the spoken answer
+    becomes a permanent alias.
+    """
+    name = (name or "").strip()
+    if not name:
+        return False
+    try:
+        raw = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("Could not read %s to save an alias (%s).", CONFIG_PATH, exc)
+        return False
+
+    aliases = raw.setdefault("actions", {}).setdefault("projects", {}).setdefault("aliases", {})
+    if aliases.get(name) == str(path):
+        return True
+    aliases[name] = str(path)
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps(raw, indent=2) + "\n")
+    except OSError as exc:
+        logger.error("Could not save the alias for %r (%s).", name, exc)
+        return False
+    logger.info("learned that %r means %s", name, path)
+    return True
 
 
 def api_key(backend: str) -> str | None:
