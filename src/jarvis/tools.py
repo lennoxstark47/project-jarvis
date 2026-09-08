@@ -71,7 +71,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "Launch a macOS application by name. Use this whenever the user asks to "
             "open, start, launch, or bring up an app on their Mac (e.g. 'Safari', "
             "'Terminal', 'Claude Code', 'Visual Studio Code'). Prefer open_url when "
-            "the thing being opened is a website."
+            "the thing being opened is a website. Note that \"open Claude Code\" "
+            "belongs here — it means launch that app, not run a coding task."
         ),
         "parameters": {
             "type": "object",
@@ -100,6 +101,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "breaks, explaining or changing code, reading what a document says. It "
             "can take several minutes, which is expected. Do not use it to open an "
             "app or a web page.\n\n"
+            "The user saying the words \"Claude Code\" is NOT by itself a reason "
+            "to use this tool. \"Open Claude Code\" means launch the application "
+            "— that is open_app. Use this tool only when there is an actual task "
+            "to carry out inside a project, and never invent one: if the user "
+            "named no task, they did not ask for this tool.\n\n"
             "Call this even when you have never heard of the project the user named "
             "and have no idea where it is. Turning a spoken project name into a "
             "folder is Jarvis's job, not yours: it searches the user's project "

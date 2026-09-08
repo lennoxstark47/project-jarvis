@@ -166,8 +166,11 @@ class Agent:
             return None
 
         followup.take()
-        # Learn it, so this is asked once per project and never again.
-        config.save_alias(pending.project, directory)
+        # Learn it, so this is asked once per project and never again — but not
+        # on a dry run, which is meant to leave nothing behind. (It did, until
+        # a --backend comparison quietly wrote a junk alias into config.)
+        if not self.dry_run:
+            config.save_alias(pending.project, directory)
         logger.info("%r is %s — running the parked task there", pending.project, directory)
         self._status(f"Got it — {directory.name}")
 

@@ -650,10 +650,22 @@ with tempfile.TemporaryDirectory() as tmp:
             )
             check("the question is consumed", followup.peek() is None)
             check(
-                "the location is learned, so it's asked exactly once per project",
-                json.loads(config_file.read_text())["actions"]["projects"]["aliases"]
-                == {"my invoicing thing": str(home / "Documents" / "client work" / "invoicing")},
+                "a dry run leaves the user's config alone",
+                json.loads(config_file.read_text()) == {},
                 config_file.read_text(),
+            )
+            # The learning itself, tested directly — a dry run deliberately
+            # skips it, so the seeded turn above can't be what proves it works.
+            config.save_alias("my invoicing thing", home / "Documents" / "client work")
+            check(
+                "a real answer is learned, so it's asked exactly once per project",
+                json.loads(config_file.read_text())["actions"]["projects"]["aliases"]
+                == {"my invoicing thing": str(home / "Documents" / "client work")},
+                config_file.read_text(),
+            )
+            check(
+                "saving an alias preserves whatever else is in the file",
+                "actions" in json.loads(config_file.read_text()),
             )
 
             followup.ask_where("mystery", "do the thing")

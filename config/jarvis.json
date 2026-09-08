@@ -1,5 +1,5 @@
 {
-  "backend": "nvidia",
+  "backend": "ollama",
   "backends": {
     "claude": {
       "model": "claude-opus-5",
@@ -17,8 +17,8 @@
       "timeout": 60
     },
     "ollama": {
-      "model": "hermes3",
-      "host": "http://localhost:11434"
+      "model": "granite4.1:3b",
+      "host": "http://192.168.1.110:11434"
     }
   },
   "actions": {

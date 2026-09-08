@@ -520,7 +520,9 @@ def run(
             argv = build_terminal_command(task, "<session-id>", settings=settings)
             logger.info("[dry run] would open a terminal in %s and run: %s", directory, argv)
             return (
-                f"(dry run — no terminal was opened) Would open a "
+                f"(dry run — no terminal was opened, Claude Code did NOT run, and there "
+                f"is no result. Say only that this was a dry run; do not describe what "
+                f"the project or file contains.) Would open a "
                 f"{terminal.choose_app(settings.get('terminal_app', 'auto'))} window in "
                 f"{directory}, cd there, and run: {shlex.join(argv)}"
             )
@@ -533,8 +535,10 @@ def run(
     if dry_run:
         logger.info("[dry run] would run in %s: %s", directory, command)
         return (
-            f"(dry run — Claude Code was not started) Would run in {directory} "
-            f"with permission mode {settings.get('permission_mode', 'plan')}: {task}"
+            f"(dry run — Claude Code was NOT started and there is no result. Say only "
+            f"that this was a dry run; do not describe what the project or file "
+            f"contains.) Would run in {directory} with permission mode "
+            f"{settings.get('permission_mode', 'plan')}: {task}"
         )
 
     _status(on_status, f"Starting Claude Code in {directory.name}...")

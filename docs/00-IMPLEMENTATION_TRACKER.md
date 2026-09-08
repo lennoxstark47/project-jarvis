@@ -365,6 +365,13 @@ Notes (2026-09-05):
   Jarvis speaks its replies — a hung backend would have left the menu bar silently stuck on the
   previous reply for that long, which is indistinguishable from "Jarvis ignored me".
 
+- **✅ Carry-forward CLOSED (2026-09-08): the Ollama backend has now run live**, against
+  Ollama on a second machine on the LAN (Windows PC, GTX 1660 Ti 6 GB, `granite4.1:3b`).
+  It worked on the *first* attempt with no changes — the message translation this file's
+  self-test pins turned out to be correct, tool calls included. See the Phase 3 "Local
+  models" note for the numbers, which are the real story. The original warning follows,
+  and still applies to `claude` and `openai`, which remain unexercised.
+
 - **⚠ Carry-forward for whoever changes `backend` in `config/jarvis.json`:** only the
   `nvidia` path has ever made a real network call. `claude` and `ollama` are written and
   their message translation is pinned by `scripts/selftest_brain.py`, but neither has been
@@ -471,7 +478,7 @@ Notes (2026-09-07):
     with the same lock + main-thread-timer discipline Phase 1 established. Menu text is
     truncated to 90 chars for display only (Claude Code returns paragraphs); the log keeps
     the full text.
-  - `scripts/selftest_actions.py` — 103 offline checks (60 in round 1, the rest round 2), no API key, no network, no money.
+  - `scripts/selftest_actions.py` — 107 offline checks, no API key, no network, no money.
   - `scripts/try_actions.py` — the live harness (each tool on its own, or a whole spoken
     sentence through the agent). Dry-runs unless `--for-real`, same as `try_brain.py`.
 
@@ -688,6 +695,47 @@ relay the result even in the visible mode; that turned out to have a clean solut
 **Also observed, not fixed (Phase 8's territory):** one model call took **175 seconds** on the
 NVIDIA free tier, with an SDK retry in the middle. The sub-agent work is not the slow part —
 the free-tier routing calls around it are.
+
+### Local models on a second machine (2026-09-08) — and the new default backend
+
+Tested at your request: Ollama on the Windows PC (GTX 1660 Ti, 6 GB), Jarvis on the Mac,
+same wifi. `granite4.1:3b` (2.1 GB, Q4_K_M, `capabilities: ["completion","tools"]`).
+Setup was `OLLAMA_HOST=0.0.0.0:11434` on the PC, firewall open on 11434, and
+`backends.ollama.host` pointed at `http://192.168.1.110:11434`.
+
+**It is not close.** Same commands, same tools, same prompts:
+
+| command | ollama / granite4.1:3b | nvidia / gpt-oss-20b |
+|---|---|---|
+| "open github.com" | **3.7s** | ~2.7s (Phase 2) / 91s (today) |
+| "open Claude Code" | **0.7s** | **101.7s** |
+| "…use claude code to say what the followup module does" | **1.8s** | ~60-90s |
+| the "where is it?" pair | **1.4s + 1.6s** | ~40s + ~30s |
+
+`config/jarvis.json`'s `backend` is now **`ollama`**. The free NVIDIA tier had degraded to
+40-100s per routing call, which is unusable for a push-to-talk assistant; a 3B model on a
+six-year-old GPU one room away answers in under two seconds. The obvious cost: **Jarvis has
+no brain when the PC is off.** Change that one word back to `nvidia` when working away from
+it — and note that the sub-agent itself is unaffected either way, since Claude Code brings
+its own model.
+
+**Two bugs the local model found that the hosted one had been hiding:**
+
+1. **"open Claude Code" routed to `run_claude_code`, with an invented task.** Phase 2's own
+   Definition-of-done command, broken by Phase 3 adding a tool whose name contains the words
+   the user is saying. gpt-oss-20b disambiguated it correctly and so it was never noticed;
+   granite4.1:3b did not. Fixed in the descriptions — `run_claude_code` now states outright
+   that hearing "Claude Code" is not a reason to use it and that "open Claude Code" means
+   `open_app`, and never to invent a task the user didn't give. Granite then got it right in
+   **0.7s**. Worth generalizing: *a smaller model is a better test of a tool description than
+   a larger one*, because a large model quietly compensates for descriptions that are wrong.
+2. **A dry run hallucinated results, and wrote to the real config.** Asked in dry-run mode
+   what the phase plan covered, granite confidently described "literature review, data
+   collection, analysis, manuscript preparation" — from a tool result that contained no
+   content at all, only "would open...". The dry-run strings now say in words that nothing
+   ran and there is no result to report (it now answers "this was a dry-run"). Separately,
+   the follow-up path was calling `config.save_alias` even on a dry run, so a
+   backend-comparison run left a junk alias in `config/jarvis.json`. Both fixed and pinned.
 
 ### How to test Phase 3 (do these in order)
 
