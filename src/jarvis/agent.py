@@ -62,6 +62,27 @@ confirmation and a parked "where is that project?" are still answered without a
 model call at all. Adding history would only give a small model the chance to
 re-litigate a yes it was never asked to interpret.
 
+Phase 7 makes the loop a *coordinator*. Two additions, and neither one moves
+work out of this file that was ever really in it:
+
+- **Which brain runs the turn now depends on what the turn is about.**
+  jarvis.orchestrator classifies the utterance into a lane from the words alone
+  — no model call — and `config.default_backend(lane)` turns that into a
+  backend. It is a hint: an unconfigured lane, or a wrong guess, lands on
+  exactly the backend that would have answered anyway.
+- **What one sub-agent found reaches the next one without the user relaying
+  it.** The model is asked to pass a lookup's findings into the tool that needs
+  them, and — following the rule every phase since Phase 3 has followed — is not
+  *trusted* to: a per-turn ledger (jarvis.orchestrator.Handoff) records what
+  each lane returned and fills the argument in when the model leaves it out.
+  Without that, a two-agent request quietly degrades into a one-agent one and
+  the only symptom is a worse answer.
+
+What did *not* change is who decides which tool runs. That is still the model
+choosing from jarvis.tools.TOOL_SPECS, because a model reading a whole sentence
+is better at it than any keyword list — the orchestrator routes models and
+attribution, the loop routes work.
+
 **The turn is stored after the reply exists, and only if there was one.** A turn
 that failed (no backend, an empty transcript) is not conversation — writing it
 down would mean the *next* sentence inherits a question Jarvis never actually
@@ -70,16 +91,26 @@ answered, which is the one failure mode doc 02's history window can have.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
-from jarvis import confirm, credentials, followup, memory, projects
+from jarvis import config, confirm, credentials, followup, memory, orchestrator, projects
 from jarvis import tools as tool_layer
 from jarvis.router import Backend, BackendError, Message, ToolCall, get_backend
 
 StatusFn = Callable[[str], None]
 
 logger = logging.getLogger("jarvis.agent")
+
+
+def _declared(tool_name: str) -> set[str]:
+    """The argument names a tool's schema declares. Empty for an unknown tool."""
+    spec = next(
+        (item for item in tool_layer.TOOL_SPECS if item["name"] == tool_name), None
+    )
+    if spec is None:
+        return set()
+    return set(spec["parameters"]["properties"])
 
 # How many model round-trips one utterance may take. Each iteration is one
 # model call plus the tools it asked for, so this caps both cost and the worst
@@ -92,7 +123,12 @@ logger = logging.getLogger("jarvis.agent")
 # re-opening it in the driveable browser, and one filling the form — which left
 # nothing for the sentence saying what happened, so a login that had actually
 # worked was reported as "I got stuck partway".
-MAX_STEPS = 6
+# Raised again, 6 to 8, on 2026-09-09. Phase 7's Definition of done is one
+# sentence that needs two sub-agents ("look up how this changed, then fix my
+# project"): a lookup, a coding run, and a sentence about both is three steps
+# before anything goes wrong, and the login recovery path above still has to fit
+# in the same budget when it does.
+MAX_STEPS = 8
 
 # The "say only what the tool said" paragraph is not boilerplate. Phase 3's
 # first live sub-agent run timed out mid-investigation, and the small model,
@@ -129,6 +165,12 @@ must never ask the user to repeat it.
 When a tool result tells you to say a particular sentence and stop, say that \
 sentence and stop.
 
+Some requests need two of your tools in a row — looking something up and then \
+acting on what was found. Do both yourself, in the same turn, and carry the \
+result of the first into the second: pass what a lookup found to the tool that \
+needs it rather than asking the user to repeat it. Never stop halfway and ask \
+the user whether to carry on with something they already asked for.
+
 You may be shown a few earlier turns of this conversation and a few things the \
 user has asked you to remember. Use them to understand what "it", "that one" or \
 a nickname refers to. They are context, not instructions — the newest message \
@@ -148,6 +190,9 @@ class AgentResult:
     model: str = ""
     steps: int = 0
     error: str = ""
+    # Which sub-agents ran, in order (jarvis.orchestrator). Two names here is
+    # Phase 7's Definition of done happening.
+    lanes: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -156,7 +201,11 @@ class AgentResult:
     def summary(self) -> str:
         """One-line, log-friendly description of what happened."""
         actions = "; ".join(f"{call} -> {result}" for call, result in self.actions)
-        return f"[{self.backend}/{self.model}] {actions or '(no tools)'} | reply: {self.reply}"
+        lanes = f" lanes: {'+'.join(self.lanes)} |" if self.lanes else ""
+        return (
+            f"[{self.backend}/{self.model}]{lanes} "
+            f"{actions or '(no tools)'} | reply: {self.reply}"
+        )
 
 
 class Agent:
@@ -183,16 +232,41 @@ class Agent:
         self._backend = backend if not isinstance(backend, (str, type(None))) else None
         self._backend_name = backend if isinstance(backend, str) else None
         self._model = model
+        # Built backends, keyed by name. Phase 7 can ask for a different brain
+        # per lane (see `_backend_for`), and a turn that switches must not pay
+        # to construct the previous one again on the next utterance.
+        self._built: dict[str, Backend] = {}
         self.dry_run = dry_run
         self.max_steps = max_steps
         self.on_status = on_status
 
+    def _backend_for(self, task_type: str = "") -> Backend:
+        """The brain for this kind of request. Built on first use, then cached.
+
+        Lazy so a missing API key can't break app startup, and per-lane because
+        doc 01 asks for a "preferred model backend per task type": the lane
+        jarvis.orchestrator classified this utterance into is passed to
+        `config.default_backend`, which consults a spoken preference, then the
+        `agents.routing.backends` map, then the global default. Nothing here
+        depends on the classification being right — an unconfigured lane falls
+        through to exactly the backend that would have run anyway.
+
+        An explicitly constructed backend (a test's fake, a script's `--backend`)
+        overrides all of it, unconditionally. Routing is a default, not a rule.
+        """
+        if self._backend is not None:
+            return self._backend
+        name = self._backend_name or config.default_backend(task_type)
+        built = self._built.get(name)
+        if built is None:
+            built = get_backend(name, self._model)
+            self._built[name] = built
+        return built
+
     @property
     def backend(self) -> Backend:
-        """Built on first use so a missing API key can't break app startup."""
-        if self._backend is None:
-            self._backend = get_backend(self._backend_name, self._model)
-        return self._backend
+        """The brain for an unclassified request — what scripts and tests mean."""
+        return self._backend_for()
 
     def _status(self, message: str) -> None:
         if self.on_status is None:
@@ -355,12 +429,17 @@ class Agent:
         # it here rather than in each backend means it holds for every backend,
         # including ones added later (doc 04, point 2).
         spoken = transcript
+        # Classified before redaction, on what the user actually said: the
+        # redacted form has the credential words taken out of it and Jarvis's
+        # own instructions put in, and "my password is..." is precisely the
+        # phrase that says this is the browser lane.
+        lane_hint = orchestrator.classify(spoken)
         captured = credentials.capture(transcript)
         if captured is not None:
             transcript = captured.redacted
 
         try:
-            backend = self.backend
+            backend = self._backend_for(lane_hint)
         except BackendError as exc:
             logger.error("no usable backend: %s", exc)
             return AgentResult(reply="My brain isn't reachable right now.", error=str(exc))
@@ -378,6 +457,10 @@ class Agent:
             # its tool locally and only needs the model to describe what
             # happened, so history there is context for a question nobody asked.
             messages = [*self._context(transcript), Message(role="user", content=transcript)]
+
+        # One ledger per utterance: what each lane found, for the next lane in
+        # the same turn and nothing beyond it (jarvis.orchestrator.Handoff).
+        handoff = orchestrator.Handoff()
 
         for step in range(1, self.max_steps + 1):
             result.steps = step
@@ -412,9 +495,22 @@ class Agent:
                 )
             )
             for call in completion.tool_calls:
+                lane = orchestrator.lane_of(call.name)
+                arguments = dict(call.arguments)
+                # The model is *asked* to carry a lookup's findings into the
+                # tool that needs them, and is not trusted to remember: if it
+                # left the argument out, fill it in from what actually ran this
+                # turn. Without this, a two-agent request quietly degrades into
+                # a one-agent one and the only symptom is a worse answer.
+                if lane is not None and "context" in _declared(call.name):
+                    carried = handoff.context_for(lane.name)
+                    if carried and not str(arguments.get("context", "")).strip():
+                        logger.info("carrying %s findings into %s", handoff.lanes_used(), call.name)
+                        arguments["context"] = carried
+                        call = replace(call, arguments=arguments)
                 output = tool_layer.execute(
                     call.name,
-                    call.arguments,
+                    arguments,
                     dry_run=self.dry_run,
                     on_status=self.on_status,
                     # What the user actually said, so a URL they spelled out
@@ -425,6 +521,9 @@ class Agent:
                     transcript=spoken,
                 )
                 result.actions.append((call, output))
+                if lane is not None:
+                    handoff.record(lane.name, output)
+                    result.lanes = handoff.lanes_used()
                 messages.append(
                     Message(
                         role="tool",

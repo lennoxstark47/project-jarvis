@@ -75,6 +75,7 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -542,11 +543,71 @@ def run(
         )
 
     _status(on_status, f"Starting Claude Code in {directory.name}...")
+    outcome = stream_run(command, cwd=directory, timeout=timeout, on_status=on_status)
+
+    if outcome.timed_out:
+        _status(on_status, "Claude Code timed out")
+        return (
+            f"Claude Code was still working after {timeout:.0f} seconds, so I stopped it "
+            f"and it did NOT finish the task. Tell the user it ran out of time and did "
+            f"not reach an answer — do not present anything below as a conclusion.\n\n"
+            f"{_summarize(outcome.state, outcome.elapsed, partial=True)}"
+        )
+
+    if outcome.failed_to_start:
+        logger.error("claude exited %s: %s", outcome.returncode, outcome.stderr)
+        return f"Claude Code couldn't run: {outcome.stderr}"
+
+    summary = _summarize(outcome.state, outcome.elapsed)
+    logger.info(
+        "claude code run finished in %.1fs: %s", outcome.elapsed, summary.splitlines()[0]
+    )
+    _status(on_status, "Claude Code finished")
+    return summary
+
+
+@dataclass
+class StreamOutcome:
+    """One headless `claude` run, as it ended. See `stream_run`."""
+
+    state: "_RunState"
+    elapsed: float
+    timed_out: bool
+    returncode: int
+    stderr: str
+
+    @property
+    def failed_to_start(self) -> bool:
+        """The process died without producing a result — a launch/auth failure.
+
+        Distinct from a run that *finished* and reported a problem: that one has
+        a result to relay, and relaying it is the whole job.
+        """
+        return self.returncode != 0 and not self.state.result_text
+
+
+def stream_run(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: float,
+    on_status: StatusFn | None = None,
+) -> StreamOutcome:
+    """Run a `claude --print --output-format stream-json` argv and follow it.
+
+    Factored out of `run` in Phase 7 so the research lane (jarvis/agents/
+    research.py) gets the same streaming, the same status lines, the same
+    deadline that fires while the CLI is *silent*, and the same stderr drain —
+    rather than a second, subtly different subprocess wrapper. What the events
+    mean is still `_handle_event`'s business; what they should be *called* out
+    loud belongs to the caller, which is why this returns the state instead of a
+    sentence.
+    """
     started = time.monotonic()
     try:
         process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             command,
-            cwd=str(directory),
+            cwd=str(cwd),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -575,26 +636,12 @@ def run(
 
     if timed_out:
         _terminate(process)
-        _status(on_status, "Claude Code timed out")
-        return (
-            f"Claude Code was still working after {timeout:.0f} seconds, so I stopped it "
-            f"and it did NOT finish the task. Tell the user it ran out of time and did "
-            f"not reach an answer — do not present anything below as a conclusion.\n\n"
-            f"{_summarize(state, elapsed, partial=True)}"
-        )
+        return StreamOutcome(state, elapsed, True, process.returncode or 0, "")
 
     process.wait()
     stderr_thread.join(timeout=1.0)
-
-    if process.returncode != 0 and not state.result_text:
-        detail = "".join(stderr_lines).strip()[-500:] or f"exit code {process.returncode}"
-        logger.error("claude exited %s: %s", process.returncode, detail)
-        return f"Claude Code couldn't run: {detail}"
-
-    summary = _summarize(state, elapsed)
-    logger.info("claude code run finished in %.1fs: %s", elapsed, summary.splitlines()[0])
-    _status(on_status, "Claude Code finished")
-    return summary
+    stderr = "".join(stderr_lines).strip()[-500:] or f"exit code {process.returncode}"
+    return StreamOutcome(state, elapsed, False, process.returncode, stderr)
 
 
 def _pump(

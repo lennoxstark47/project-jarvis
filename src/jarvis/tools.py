@@ -17,6 +17,12 @@ explicitly adds a tool, never opportunistically.
   (jarvis.confirm) reached only by a human answer, because this tool list is
   precisely the surface a mis-transcribed sentence can reach, and doc 04's
   point 4 puts a person between "filled" and "submitted" on purpose.
+- Phase 7 adds `research` (jarvis.agents.research) — the lookup lane, and the
+  second tool that starts a sub-agent. It is also the phase that gives every
+  tool here an *owner*: each name below belongs to exactly one lane in
+  `jarvis.agents`, or to the main loop itself, and `jarvis.orchestrator` is what
+  says which. The list is otherwise unchanged — routing across sub-agents did
+  not need a wider surface, only a labelled one.
 - Phase 6 adds `remember` and `open_project` (jarvis.memory, jarvis.projects) —
   the two halves of doc 01's "open my project works days later": one to teach a
   name, one to use it. `remember` is the first tool that writes something
@@ -155,6 +161,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
                         "nothing except this text, so include every detail of the "
                         "problem the user described — symptoms, file or function "
                         "names, error messages — rather than a short paraphrase."
+                    ),
+                },
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "What you already looked up for this request, if anything — "
+                        "paste the findings from a `research` call made earlier in "
+                        "this same turn. Claude Code cannot see that lookup, so this "
+                        "is the only way it reaches it. Leave this out entirely if "
+                        "nothing was looked up: never summarise from memory, and "
+                        "never put the user's own words here."
                     ),
                 },
             },
@@ -297,6 +314,41 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 }
             },
             "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "research",
+        "description": (
+            "Look something up on the public web and get back what was found. Use "
+            "this whenever the user asks you to look something up, search, google, "
+            "or find out about something — and also whenever you need a current "
+            "fact you do not reliably know (a version number, whether an API "
+            "changed, what a release note says) in order to answer or to brief "
+            "another tool. It takes ten seconds to a minute, which is expected.\n\n"
+            "When the request is a lookup AND something to do with the result — "
+            "'find out how that library changed, then fix my project' — call this "
+            "first, then call the other tool in the same turn, passing what you "
+            "learned along. Never ask the user to repeat the findings back to you.\n\n"
+            "Do not use this for anything on the user's own Mac: files, projects "
+            "and code are run_claude_code's job, not the web's. Do not use it to "
+            "check something you already know, and never answer a lookup question "
+            "from your own memory instead of calling this."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The question to look up, written as a full question in "
+                        "plain English — the researcher sees nothing but this text, "
+                        "so name the library, product or version the user meant "
+                        "rather than saying 'it' or 'that one'."
+                    ),
+                }
+            },
+            "required": ["question"],
             "additionalProperties": False,
         },
     },
@@ -496,12 +548,18 @@ def open_app(name: str, *, dry_run: bool = False, on_status: StatusFn | None = N
 def run_claude_code(
     project: str,
     task: str,
+    context: str = "",
     *,
     directory: "Path | None" = None,
     dry_run: bool = False,
     on_status: StatusFn | None = None,
 ) -> str:
-    """Resolve the project name, then hand the task to the Claude Code sub-agent.
+    """Hand the task to the coding lane (jarvis.agents.coding).
+
+    Since Phase 7 the body of this lives in the lane — resolving the project,
+    parking the request as a question when it can't, and folding in `context`
+    (what the research lane found earlier in the same turn) before Claude Code
+    sees the task. What stays here is the contract.
 
     `directory` skips resolution for a caller that has already worked the folder
     out through a trusted route — specifically jarvis.agent, after you said out
@@ -514,36 +572,36 @@ def run_claude_code(
     Imported lazily so that a broken/missing `claude` CLI can only ever affect
     the command that asked for it, the way the router treats vendor SDKs.
     """
-    from jarvis import claude_code, followup, projects
+    from jarvis.agents import coding
 
-    logger.info("tool run_claude_code(project=%r, task=%r)", project, task)
-    if directory is not None:
-        return _hand_over(directory, task, dry_run=dry_run, on_status=on_status)
-
-    try:
-        directory = projects.resolve(project)
-    except projects.ProjectError as exc:
-        # A resolution failure is a *question for the user* ("where is it?"),
-        # not a crash. Park the request so the next thing they say can be the
-        # answer (jarvis.followup), and hand the model the wording to ask with.
-        followup.ask_where(project, task)
-        return (
-            f"{exc} Ask the user where it is, in one short sentence, and say nothing else — "
-            f"their next words will be the answer and I'll handle it."
-        )
-
-    return _hand_over(directory, task, dry_run=dry_run, on_status=on_status)
+    logger.info(
+        "tool run_claude_code(project=%r, task=%r, context=%s)",
+        project,
+        task,
+        f"{len(context)} chars" if context else "none",
+    )
+    return coding.run(
+        task,
+        context=context,
+        dry_run=dry_run,
+        on_status=on_status,
+        project=project,
+        directory=directory,
+    )
 
 
-def _hand_over(
-    directory: "Path", task: str, *, dry_run: bool, on_status: StatusFn | None
+def research(
+    question: str = "", *, dry_run: bool = False, on_status: StatusFn | None = None
 ) -> str:
-    from jarvis import claude_code
+    """Look something up on the web, through the research lane.
 
-    try:
-        return claude_code.run(directory, task, dry_run=dry_run, on_status=on_status)
-    except claude_code.ClaudeCodeError as exc:
-        return str(exc)
+    Lazily imported like every other sub-agent entry point, so a machine with no
+    `claude` CLI still runs every command that doesn't need one.
+    """
+    from jarvis.agents import research as research_lane
+
+    logger.info("tool research(%r)", question)
+    return research_lane.run(question, dry_run=dry_run, on_status=on_status)
 
 
 def open_portal(url: str, *, dry_run: bool = False, on_status: StatusFn | None = None) -> str:
@@ -660,6 +718,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "fill_login_form": fill_login_form,
     "remember": remember,
     "open_project": open_project,
+    "research": research,
 }
 
 

@@ -151,7 +151,7 @@ def main() -> int:
                              "speech.backends.say.voice)")
     parser.add_argument("--unset", metavar="KEY", help="clear a preference")
     parser.add_argument("--backend-for", nargs=2, metavar=("TASK_TYPE", "BACKEND"),
-                        help="prefer a backend for a kind of task (stored now, routed in Phase 7)")
+                        help="prefer a backend for a lane: coding, browser, research, chat")
     parser.add_argument("--ask", metavar="COMMAND", help="run one sentence through the agent loop")
     parser.add_argument("--backend", help="which brain answers --ask (default: the configured one)")
     parser.add_argument("--for-real", action="store_true",
@@ -199,8 +199,9 @@ def main() -> int:
     if args.backend_for:
         task_type, backend = args.backend_for
         memory.set_backend_for(task_type, backend)
-        print(f"{task_type} tasks will prefer {backend} — once something classifies a "
-              f"task type, which is Phase 7.")
+        print(f"{task_type} tasks will prefer {backend}. Phase 7's classifier "
+              f"(jarvis.orchestrator) is what puts an utterance in that lane; "
+              f"scripts/try_agents.py --classify shows where a sentence lands.")
         return 0
     if args.remember:
         return remember(*args.remember, dry_run=dry_run)

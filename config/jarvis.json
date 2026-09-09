@@ -88,5 +88,25 @@
         "timeout": 30
       }
     }
+  },
+  "agents": {
+    "research": {
+      "enabled": true,
+      "cli": "claude",
+      "model": null,
+      "timeout": 180,
+      "max_budget_usd": null,
+      "max_result_chars": 1200,
+      "extra_args": []
+    },
+    "routing": {
+      "enabled": true,
+      "backends": {
+        "coding": null,
+        "research": null,
+        "browser": null,
+        "chat": null
+      }
+    }
   }
 }

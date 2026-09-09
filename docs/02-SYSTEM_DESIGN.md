@@ -116,6 +116,30 @@ theory, Claude-shaped in practice."
   + relevant memory to the router, get back either a spoken reply or a tool call,
   execute the tool, feed the result back in, repeat until done. This *is* "the
   agent" — there's no more mysterious machinery underneath it than this loop.
+- **Sub-agents and the orchestrator** — **built 2026-09-09 (Phase 7)**,
+  `jarvis/agents/` and `jarvis/orchestrator.py`. Three lanes, each owning a
+  narrow slice of the tool layer: **coding** (`run_claude_code`), **browser**
+  (`open_portal`, `fill_login_form`) and **research** (`research` — the `claude`
+  CLI again, with only WebSearch/WebFetch and a throwaway working directory).
+  `open_url`, `open_app`, `remember` and `open_project` stay the main loop's
+  own: they finish in milliseconds and need no worker.
+  - **The loop still routes the work; the orchestrator routes the *brain*.**
+    Which tool runs is the model's decision, from the tool descriptions — it
+    reads the whole sentence and is better at it than any keyword list. What the
+    orchestrator classifies (locally, no model call) is which *lane* an
+    utterance belongs to, which picks the backend via
+    `config.default_backend(lane)` — doc 01's "preferred backend per task type",
+    which had storage from Phase 6 and no caller until now. It is a hint: a
+    wrong guess costs nothing but the backend that would have run anyway.
+  - **The join between two sub-agents is local, not prompted.** A per-turn
+    ledger (`orchestrator.Handoff`) records what each lane returned, and the
+    loop fills a lookup's findings into the coding tool's `context` argument
+    when the model forgets to. The model is asked; it is not trusted — the same
+    rule as every locally-resolved thing since Phase 3, and here it is what
+    stops a two-agent request silently degrading into a one-agent one.
+  - **No framework was adopted**; see doc 03's "The decision, made 2026-09-09"
+    for why LangGraph/CrewAI would have cost more than they'd carry, and what
+    would make the Claude Agent SDK worth revisiting later.
 - **Memory store:** SQLite is enough at this scale. Two kinds of memory:
   short-term (recent conversation turns, for context) and long-term (aliases like
   "my project" → path, preferences like default voice/backend). Long-term memory
@@ -165,6 +189,15 @@ phase explicitly adds a tool:
     asks you to quit Firefox rather than failing obscurely.
 - Gesture-mapped meta-actions (`confirm`, `cancel`) — Phase 5, reuse the same tool
   contract voice already established.
+- `research(question)` — Phase 7, `jarvis/agents/research.py`. A web lookup, run
+  as the `claude` CLI with `--restricted --strict-mcp-config
+  --allowedTools=WebSearch,WebFetch` in a fresh temporary directory: it can read
+  the public web and write to a folder that's deleted when it returns. Chosen
+  over a search API because that would have meant a new key, a scraper and a
+  summarizer to reproduce something already installed and authenticated.
+  Measured 2026-09-09: 32s and $0.12 for a three-search question — the
+  three-search cap is in the prompt, and it is there because the first live run
+  without it made thirteen searches over 84 seconds.
 - `remember(name, value)`, `open_project(name)` — Phase 6. Two tools rather than
   the zero this doc originally implied memory would need, and the reason is the
   Definition of done: "open my project, days later" needs a way to *say* what

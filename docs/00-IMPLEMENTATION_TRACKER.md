@@ -8,10 +8,10 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus: Phase 7 — multi-agent orchestration.** Phase 6 finished
-2026-09-09; the next command is **"start phase 7"**.
+**Current focus: Phase 8 — polish: always-on companion.** Phase 7 finished
+2026-09-09; the next command is **"start phase 8"**.
 
-Two things are open and neither blocks Phase 7:
+Two things are open and neither blocks Phase 8:
 
 - **Phase 5 (gestures) is paused at 🔶 In progress**, deliberately, by your call
   on 2026-09-09: *"we will work on the hand gestures later on, right now lot of
@@ -1679,17 +1679,201 @@ turn. The degradation check (a database in a 0500 directory) is what found it.
 ---
 
 ## Phase 7 — Multi-agent orchestration
-Status: ☐ Not started
+Status: ✅ Done — 2026-09-09
 
-- ☐ Framework decision revisited (LangGraph / CrewAI / custom / Claude Agent SDK)
-- ☐ Coding sub-agent (wraps Claude Code)
-- ☐ Browser/automation sub-agent (wraps Playwright tools)
-- ☐ Research/lookup sub-agent
-- ☐ Main loop routes across sub-agents instead of one-prompt-does-everything
-- **Definition of done:** a request needing 2 sub-agents completes without manual sequencing
+- ✅ Framework decision revisited — **no framework**, decided with the three
+  sub-agents in front of us rather than imagined; written up in
+  `docs/03-AGENTS_AND_MODELS.md` ("The decision, made 2026-09-09")
+- ✅ Coding sub-agent (wraps Claude Code) — `src/jarvis/agents/coding.py`
+- ✅ Browser/automation sub-agent — `src/jarvis/agents/browser.py`, owning
+  `open_portal` + `fill_login_form`; deliberately no inner model loop (below)
+- ✅ Research/lookup sub-agent — `src/jarvis/agents/research.py`, the `claude`
+  CLI with only WebSearch/WebFetch, in a throwaway directory
+- ✅ Main loop routes across sub-agents — `src/jarvis/orchestrator.py`: lane
+  ownership, a local classifier that picks the *brain*, and the per-turn
+  handoff ledger that carries one lane's findings into the next
+- ✅ **Definition of done:** a request needing 2 sub-agents completes without
+  manual sequencing — **proven live 2026-09-09**, one sentence, research then
+  coding, on the free OpenRouter model (transcript below)
 
-Notes:
-- _(none yet)_
+Notes (2026-09-09):
+
+**What was built:**
+- `src/jarvis/agents/` — `base.py` (what a sub-agent *is*: a name, the tools it
+  owns, a description, and `run`), plus one module per lane and a registry in
+  `__init__.py`.
+- `src/jarvis/orchestrator.py` — `classify` (which lane, from words alone),
+  `Handoff` (what each lane found, for the next lane in the same turn), and
+  `lane_of` (which sub-agent a tool belongs to).
+- `src/jarvis/tools.py` — one new tool (`research`) and one new argument
+  (`run_claude_code`'s `context`). `run_claude_code`'s body moved into the
+  coding lane; the contract stayed here.
+- `src/jarvis/agent.py` — per-lane backend selection, the ledger, `MAX_STEPS`
+  6 → 8, and a system-prompt paragraph telling the model to do both halves of a
+  two-part request itself.
+- `src/jarvis/claude_code.py` — the headless streaming half of `run` factored
+  out as `stream_run`, so the research lane reuses the same pump, the same
+  status lines, the same deadline-while-silent and the same stderr drain rather
+  than getting a second, subtly different subprocess wrapper.
+- `config/jarvis.json` — an `agents` block (`research`, `routing`), with
+  `JARVIS_RESEARCH_*` / `JARVIS_ROUTING_ENABLED` env overrides.
+- `scripts/selftest_agents.py` (71 offline checks) and `scripts/try_agents.py`
+  (`--classify`, `--lane`, `--ask`, dry-run by default).
+
+**The framework question answered itself once the lanes existed.** The plan
+deferred LangGraph/CrewAI/Agent SDK to this phase on the theory that
+hand-rolled coordination starts to hurt here. It didn't, and the reason is that
+the three sub-agents share no execution model to schedule: one is a terminal
+window you can take over, one is a browser session with a human confirmation in
+the middle of it, one is a subprocess with the web on and the filesystem off.
+What they share is a contract about tool ownership — 40 lines of dataclass. The
+cost of a framework would have been re-expressing Jarvis's actual guarantees
+(the credential lifted out before anything leaves the machine, the spoken yes
+before a submit, project containment, dry runs leaving nothing behind) inside
+someone else's abstractions, and every one of those lives in the *ordering* of
+the loop. Full argument in doc 03; the Claude Agent SDK stays worth revisiting
+as a way to run one lane in-process, not as an orchestrator.
+
+**⚠ "The main loop routes across sub-agents" is deliberately not a router that
+picks tools.** Two things could have been meant by it, and choosing wrong here
+would have been expensive:
+
+1. A planner call that decides which sub-agent handles the request, then runs
+   it. This adds a model round-trip to *every* utterance, at the exact point in
+   the turn where you are standing there waiting, and replaces the thing that
+   is already good at the decision — a model reading the whole sentence against
+   the tool descriptions — with something worse.
+2. What shipped: the model still chooses the tool, and the tool *is* the lane
+   (each tool belongs to exactly one sub-agent). The orchestrator classifies
+   locally, with keywords, and what that classification picks is the **backend**
+   for the turn, not the work.
+
+So the routing that mattered turned out to be routing *models*, and the routing
+of work was already correct — which is also what finally gave Phase 6's
+`backend_for.<task>` preference a caller after it sat unused for a phase.
+
+**⚠ The join between two agents is local, because a small model forgets.** The
+model is *asked* to pass a lookup's findings into `run_claude_code`'s `context`
+argument — and on the live run below it actually did. It was still wrong to
+depend on that: the failure mode when it forgets is not an error, it is a
+correct-looking run of the second agent with the first agent's work thrown
+away, i.e. Phase 7's Definition of done quietly not happening while everything
+reports success. `orchestrator.Handoff` records what each lane returned and
+`jarvis.agent` fills the argument in when it's missing. Two rules in it are
+worth keeping: a lane never receives its own output back, and **only findings
+travel** — the browser lane's "Opened the page" is status, and pasting status
+into a coding brief is noise a small model then has to explain away.
+
+**⚠ A lookup is not free, and the first one proved it.** The research lane's
+first live run made **13 web searches over 84 seconds and cost $0.51**,
+answering "what version is requests on, and was a keyword argument renamed" —
+it kept hunting for the second half, which had no answer, and the honest "I
+found no evidence" it eventually gave was worth about two searches. The prompt
+now caps it at three searches and says why (someone is waiting to hear a
+sentence out loud). Same shape of question afterwards: **3 searches, 32s,
+$0.12.** `agents.research.model` and `max_budget_usd` are there if it needs to
+get cheaper still.
+
+**The browser lane has no inner model loop, on purpose.** The obvious
+multi-agent move is to give the browser its own small model and let it drive
+itself. Jarvis doesn't, because Phase 4's login is four utterances long and two
+of its steps are resolved with *no model call at all*: the credential is lifted
+out of the transcript locally, and the submit waits for a spoken yes. A
+sub-agent loop between the user and those steps would either have to be handed
+the password — destroying the one guarantee that lets a cloud brain be used for
+a login at all — or would be a second small model re-deciding a confirmation
+the user already gave. The sequencing there is already automatic; what makes it
+correct is that a person is one of the steps. Revisit only when a task needs
+several page actions with nobody in between.
+
+**Where the research lane is allowed to run, and why it's a temp directory.**
+`--restricted` confines the file tools to the working directory, so pointing
+that at an empty `tempfile.TemporaryDirectory` rather than a project means the
+confinement has nothing to confine it *to*. Combined with
+`--strict-mcp-config` and `--allowedTools=WebSearch,WebFetch`, a lookup can
+read the public web and write to a folder that is deleted when it returns —
+which is why this phase added no key, no permission prompt and nothing to doc
+04. The allowed-tools flag is written as **one** argv entry (`--allowedTools=`)
+for the reason Phase 3 discovered live: it is variadic, and as two entries it
+keeps swallowing arguments, including the question.
+
+**Measured, on this Mac, live against OpenRouter/nex-n2.5-mini:free:**
+
+| | |
+|---|---|
+| classification (which lane, which brain) | **< 1 ms** — keywords, no model call |
+| a three-search web lookup | **32s, $0.12** (13 searches / 84s / $0.51 before the cap) |
+| the two-lane Definition of done, end to end | **98.8s**, 3 steps, both lanes correct |
+
+**What was actually run (the Definition of done, one sentence, nothing sequenced
+by hand):**
+
+```
+.venv/bin/python3 scripts/try_agents.py --ask "look up the latest stable version of
+    the mediapipe python package, then have claude code check which version project
+    jarvis pins in requirements dot txt" --for-real
+
+  [research] research(question='What is the latest stable released version of the
+             Python package MediaPipe on PyPI?')
+      Web lookup finished (3 web calls, 32s, $0.12) ... MediaPipe moved from the
+      0.10.x series to 1.0.0 (mid-2026), followed by 1.0.1 ...
+
+  [coding]   run_claude_code(project='project jarvis', task='Inspect the project for
+             requirements.txt and determine exactly which MediaPipe version ... is
+             pinned there', context='The web lookup found that the latest stable
+             MediaPipe ... is 1.0.1 ...')
+      Claude Code finished (3 tool calls; 50s) ... requirements.txt line 72:
+      mediapipe>=0.10.35,<1
+
+says: PyPI's latest stable MediaPipe version appears to be 1.0.1, while
+      `project jarvis` pins `mediapipe>=0.10.35,<1` in requirements.txt line 72,
+      intentionally excluding 1.0.1 ...
+
+[openrouter/nex-agi/nex-n2.5-mini:free] lanes: research+coding | 3 step(s) | 98.8s
+```
+
+**Deliberately not built, and each is somebody else's phase:**
+- **Nothing runs two lanes in parallel.** The two lanes of the worked example
+  are inherently sequential (the second needs the first's answer). Parallelism
+  would only pay for an "A and also B" request, and it would need the status
+  surface to say two things at once — which is Phase 8's menu bar, not this
+  phase's loop.
+- **The classifier is keywords, not a model.** It picks the brain, so being
+  wrong costs the backend that would have answered anyway. If it ever picks
+  something that *acts*, that trade stops being acceptable and it needs to
+  become a real classifier.
+- **No lane summarises or persists its findings.** The handoff ledger lives for
+  one utterance and is deliberately not written to the memory store: a lookup
+  from twenty minutes ago silently becoming background for an unrelated coding
+  task is the failure mode `jarvis.followup` and `jarvis.confirm` each spend a
+  docstring avoiding.
+
+### How to test Phase 7
+
+1. **Offline, no model, no network, no `claude` CLI** (never touches the real
+   database or launches anything):
+   ```
+   .venv/bin/python3 scripts/selftest_agents.py    # 71 checks
+   ```
+2. **The lane table — who owns what, and which brain each lane would use:**
+   ```
+   .venv/bin/python3 scripts/try_agents.py
+   .venv/bin/python3 scripts/try_agents.py --classify "fix the bug in my project"
+   ```
+3. **One lane on its own** (dry run unless you add `--for-real`):
+   ```
+   .venv/bin/python3 scripts/try_agents.py --lane research "what is the latest version of X" --for-real
+   ```
+4. **The Definition of done** — one sentence, two sub-agents. Opens a terminal
+   window for the coding half and costs a real lookup:
+   ```
+   .venv/bin/python3 scripts/try_agents.py --ask "look up the latest stable version of \
+       the mediapipe python package, then have claude code check which version project \
+       jarvis pins in requirements dot txt" --for-real
+   ```
+   Look for `lanes: research+coding` on the last line.
+5. **By voice, the real thing.** `.venv/bin/python3 run.py` (quit the
+   launchd-started `dist/Jarvis.app` first), then say the same sentence.
 
 ---
 

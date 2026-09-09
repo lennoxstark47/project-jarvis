@@ -416,6 +416,48 @@ DEFAULTS: dict[str, Any] = {
         # grown for a year from making Jarvis slower every month.
         "max_facts": 6,
     },
+    # Phase 7's sub-agents (jarvis/agents/). Each lane is a narrow worker the
+    # main loop routes to; what's configurable is the one lane that starts a
+    # process of its own, plus which brain answers which kind of request.
+    "agents": {
+        # The research/lookup lane. It runs the `claude` CLI headlessly with
+        # only the web tools allowed — no repository, no file writes, no Bash —
+        # which is why it needs no key of its own beyond the one Phase 3's
+        # sub-agent already uses.
+        "research": {
+            # false makes the `research` tool report that lookups are off
+            # rather than disappearing from the tool list: a tool that vanishes
+            # makes the model invent an answer instead of saying it can't look
+            # one up.
+            "enabled": True,
+            "cli": "claude",
+            # null inherits the CLI's own default model. A lookup is a small
+            # job — "claude-haiku-4-5" is a reasonable pin if cost matters.
+            "model": None,
+            # Seconds. A web lookup that isn't done in three minutes is stuck,
+            # and the user is standing there waiting to hear something.
+            "timeout": 180,
+            "max_budget_usd": None,
+            # How much of the findings come back to the voice model. Long
+            # enough to carry a real answer into the coding lane, short enough
+            # not to bury a small model that has to say one sentence out loud.
+            "max_result_chars": 1200,
+            "extra_args": [],
+        },
+        # doc 01's "preferred model backend per task type", now that something
+        # classifies a task type (jarvis/orchestrator.py). null means "use the
+        # global `backend`". A spoken preference (memory's backend_for.<lane>)
+        # still beats anything written here.
+        "routing": {
+            "enabled": True,
+            "backends": {
+                "coding": None,
+                "research": None,
+                "browser": None,
+                "chat": None,
+            },
+        },
+    },
 }
 
 # --- the environment layer ---------------------------------------------------
@@ -449,6 +491,10 @@ ENV_OVERRIDES: dict[str, str] = {
     "JARVIS_MEMORY_PATH": "memory.path",
     "JARVIS_MEMORY_HISTORY_TURNS": "memory.history_turns",
     "JARVIS_MEMORY_HISTORY_TTL": "memory.history_ttl_seconds",
+    "JARVIS_RESEARCH_ENABLED": "agents.research.enabled",
+    "JARVIS_RESEARCH_MODEL": "agents.research.model",
+    "JARVIS_RESEARCH_TIMEOUT": "agents.research.timeout",
+    "JARVIS_ROUTING_ENABLED": "agents.routing.enabled",
 }
 
 for _name, _entry in DEFAULTS["backends"].items():
@@ -727,17 +773,36 @@ def speech_config() -> dict[str, Any]:
     return merged.get("speech", DEFAULTS["speech"])
 
 
+def agents_config(name: str) -> dict[str, Any]:
+    """One entry from the `agents` block ("research", "routing") — Phase 7.
+
+    Read on every call, like actions_config, and for the same reason: turning
+    lookups off, or pinning a cheaper model for them, should take effect on the
+    next command rather than the next restart.
+    """
+    return load_config().get("agents", {}).get(name, DEFAULTS["agents"].get(name, {}))
+
+
 def default_backend(task_type: str = "") -> str:
     """Which brain answers. A spoken preference beats the file; a plist beats both.
 
-    `task_type` is doc 01's "preferred model backend per task type" — a
-    preference stored as `backend_for.<task>` (jarvis.memory.backend_for). It is
-    honoured here so the store and the router agree on what it means, but
-    **nothing classifies a task type yet**: routing a request to a *kind* is
-    Phase 7's job (doc 01, multi-agent orchestration), and inventing a
-    classifier here would be doing Phase 7's work with none of its design. Until
-    then this argument is only ever passed explicitly, by a script comparing
-    backends.
+    `task_type` is doc 01's "preferred model backend per task type" — the lane
+    jarvis.orchestrator classified this utterance into ("coding", "research",
+    "browser", "chat"). Phase 6 built the storage for this and left the argument
+    with no caller, because deciding what *kind* of request something is was
+    Phase 7's job; jarvis.orchestrator.classify is that caller.
+
+    Three layers, most deliberate first:
+
+    1. `backend_for.<lane>` in the memory store — something the user said out
+       loud ("use Claude for coding"), so it wins.
+    2. `agents.routing.backends.<lane>` in config/jarvis.json — something they
+       typed.
+    3. The global `backend`, which is what every lane got before this existed.
+
+    An unknown lane, or a lane with nothing configured for it, falls through to
+    3 — so classification being wrong costs nothing but the model it would have
+    used anyway.
     """
     if task_type:
         try:
@@ -748,6 +813,11 @@ def default_backend(task_type: str = "") -> str:
             chosen = None
         if chosen:
             return chosen
+        routing = agents_config("routing")
+        if routing.get("enabled", True):
+            per_lane = routing.get("backends", {}).get(task_type)
+            if per_lane:
+                return str(per_lane)
     return _with_preferences(load_config()).get("backend", DEFAULTS["backend"])
 
 

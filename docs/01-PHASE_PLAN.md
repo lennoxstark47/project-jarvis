@@ -254,6 +254,31 @@ submits a login form.
 "look up how this library's API changed, then fix the bug in my project") completes
 without you manually sequencing the steps.
 
+**Built 2026-09-09.** Four things went differently from the bullets above, and
+each is written up at length in the tracker's Phase 7 notes:
+
+- **The framework decision is "no framework"**, made with the three sub-agents
+  in front of us rather than imagined — they share no execution model, only a
+  contract about tool ownership. Reasoning in doc 03's new section. The Claude
+  Agent SDK is the one option kept open, as a way to run *one lane* in-process
+  rather than as an orchestration layer.
+- **The tool list grew by one** (`research`) and one argument
+  (`run_claude_code`'s `context`). This doc's ground rule says a phase adds a
+  tool only when its Definition of done needs it, and this one's does: the
+  worked example is a *lookup* followed by a coding task, and Jarvis had no way
+  to look anything up. The research lane runs the `claude` CLI with only the web
+  tools on, so it needed no new key and no new dependency.
+- **The browser lane deliberately has no inner model loop.** Its sequencing is
+  already multi-step and already automatic — what makes it correct is that a
+  person is one of the steps (the spoken "yes" of Phase 4). A sub-agent loop
+  there would either need the password or would re-decide a confirmation the
+  user already gave.
+- **Routing picks the brain, not the tool.** "The main loop routes across
+  sub-agents" is implemented as: the model still chooses which tool to call
+  (it reads the whole sentence), while a local classifier chooses which
+  *backend* runs the turn — which is also what finally gives Phase 6's
+  "preferred backend per task type" a caller.
+
 ---
 
 ## Phase 8 — Polish: always-on companion

@@ -55,6 +55,16 @@ means something. Only the facts your sentence actually names are put in front of
 model, and anything the credential layer touches is masked before it reaches the
 disk.
 
+Phase 7 is built: Jarvis is a coordinator. Its tools are divided between three
+sub-agents — a coding lane (Claude Code inside one of your projects), a browser
+lane (the page it can see and type into), and a new research lane that looks
+things up on the public web — and one sentence can use two of them without you
+sequencing anything. "Look up the latest version of X, then have Claude Code
+check what my project pins" runs the lookup, hands its findings to the coding
+agent itself, and comes back with one spoken answer. Which brain runs a turn now
+depends on what the turn is about, and no agent framework was adopted: doc 03
+says why.
+
 `docs/00-IMPLEMENTATION_TRACKER.md` is the authoritative, per-task version of this
 — including what's been proven live versus only written.
 

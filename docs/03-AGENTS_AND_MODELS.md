@@ -126,7 +126,52 @@ churn) for a loop you could write yourself in an afternoon. The framework
 decision is deferred to **Phase 7** (multi-agent orchestration) in the phase
 plan, because that's the point where hand-rolled coordination between multiple
 agents actually starts to hurt and a framework's graph/routing abstractions start
-paying for themselves. Revisit this section then.
+paying for themselves.
+
+### The decision, made 2026-09-09 (Phase 7): no framework
+
+Revisited at the point this section names, with the sub-agents actually in front
+of us rather than imagined. **Jarvis stays hand-rolled** — `jarvis/agents/`,
+`jarvis/orchestrator.py`, and the same loop in `jarvis/agent.py` — and the
+reason is what the three sub-agents turned out to be:
+
+- **coding** is a CLI subprocess that opens a terminal window you can take over
+  mid-task, and is followed by tailing a JSONL transcript on disk to find out
+  when an interactive session went quiet;
+- **browser** is a long-lived geckodriver session with a *human confirmation*
+  in the middle of it, spread across four separate utterances;
+- **research** is a second invocation of that same CLI with the web tools on,
+  the filesystem off, and a throwaway working directory.
+
+A framework's value is scheduling homogeneous steps through a shared state
+object. These three share no execution model at all — what they share is a
+contract about which tools they may touch and who a result is attributed to,
+which is 40 lines of dataclass (`jarvis/agents/base.py`). Adopting LangGraph or
+CrewAI here would mean re-expressing that contract in someone else's
+abstractions **and** re-implementing, inside them, the things that make Jarvis
+correct rather than merely working: that a credential is lifted out of a
+transcript before anything leaves the machine, that a submit waits for a spoken
+yes, that a project name is contained to `actions.projects.roots`, that a dry
+run leaves nothing behind. Every one of those lives in the *ordering* of the
+loop. A graph library doesn't help with any of it, and would give a later
+version of me somewhere else to accidentally put them.
+
+What was actually needed for Phase 7 turned out to be small and specific:
+
+- one registry saying which lane owns which tool (`jarvis/agents/__init__.py`),
+- one keyword classifier picking the *brain* for a turn — not the tool, which
+  the model still chooses (`jarvis/orchestrator.py`),
+- one per-turn ledger so what a lookup found reaches the coding agent without
+  the user reading it out (`Handoff`, same file).
+
+That's ~200 lines with no new dependency. **The Claude Agent SDK stays the one
+worth revisiting**, and for a specific reason rather than as a hedge: Jarvis's
+two heaviest sub-agents are already the `claude` CLI shelled out to, and the SDK
+is the supported way to do that in-process — which would buy structured
+streaming and session resumption without the JSONL-tailing in
+`jarvis/claude_code.py`. That's a refactor of *how one lane runs*, not an
+orchestration framework, and it belongs in a phase that has a reason to touch
+that file. Nothing in Phase 8-9 currently does.
 
 ## MCP — you already have a head start here
 
