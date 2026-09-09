@@ -383,19 +383,97 @@ Notes (2026-09-05):
   `output_config`/effort field on the installed SDK version, and whichever Ollama model gets
   pulled actually supporting tool calls (most small ones don't).
 
+### Backend selection moved to the environment (2026-09-09) — and a fifth backend
+
+At your request: which brain answers is now an **environment** value, not a code or JSON
+edit. `.env` in the project root (gitignored, `.env.example` committed as the template)
+is read once at `jarvis.config` import and layered on top of everything:
+
+    DEFAULTS (src/jarvis/config.py)  <  config/jarvis.json  <  .env / real env vars
+
+So switching brains is one line — `JARVIS_BACKEND=openrouter`, or `ollama`, or `nvidia`
+— and a real environment variable still beats the file, which means
+`JARVIS_BACKEND=ollama .venv/bin/python3 run.py` overrides it for a single run and a
+launchd plist's `EnvironmentVariables` overrides it permanently. The knobs are listed in
+`ENV_OVERRIDES` (`config.py`) and mirrored in `.env.example`:
+
+| variable | effect |
+| --- | --- |
+| `JARVIS_BACKEND` | which backend answers |
+| `JARVIS_MODEL` / `JARVIS_BASE_URL` / `JARVIS_TIMEOUT` | applies to *whichever* backend is selected — see the trap below |
+| `JARVIS_OPENROUTER_MODEL`, `JARVIS_OLLAMA_HOST`, ... | one specific backend, whether or not it's the active one |
+| `JARVIS_SPEECH_ENABLED`, `JARVIS_SPEECH_VOICE`, `JARVIS_ALLOW_EDITS` | the knobs most likely to be flipped mid-session |
+| `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, ... | keys, read before `secrets/api_keys.json` |
+
+One trap, found while testing this and now written into `.env.example`: the unqualified
+`JARVIS_MODEL` *follows* the switch. Set it to `openai/gpt-oss-20b` for OpenRouter and then
+flip `JARVIS_BACKEND=ollama`, and Ollama gets asked for an OpenRouter model id it has never
+pulled. That's the intended semantics (one variable, one active backend), but the local
+`.env` therefore pins `JARVIS_OPENROUTER_MODEL` instead — per-backend variables stay put
+across a switch.
+
+The per-backend variables are **generated** from `DEFAULTS["backends"]`, so a backend
+added there gets its whole set for free. Values are coerced through JSON's literals, which
+matters: `JARVIS_SPEECH_ENABLED=false` has to become `False`, not the truthy string
+`"false"`. The `.env` parser is ~20 lines rather than a dependency, and deliberately does
+**not** strip inline `#` comments — an API key can contain a `#`, and that's pinned by a
+check in `selftest_brain.py`.
+
+Two things came with it:
+
+- **`openrouter` is a fifth backend** — model `nex-agi/nex-n2.5-mini:free`, base URL
+  `https://openrouter.ai/api/v1`. Like `nvidia`, it's zero new translation code: OpenRouter
+  speaks the OpenAI dialect, so it's `OpenAIBackend` with another `provider` entry. It also
+  gained optional per-provider `headers` (OpenRouter's `HTTP-Referer` / `X-Title`
+  attribution), which no other backend sets.
+- **Adding a provider is now config-only too.** `get_backend()` falls back to the OpenAI
+  backend for *any* name that appears under `backends` in `config/jarvis.json` with a
+  `base_url`, and `config.api_key()` falls back to the obvious env var name
+  (`groq` → `GROQ_API_KEY`). So pointing Jarvis at Groq, Together, or a self-hosted vLLM is
+  a JSON block, not a commit. `scripts/try_*.py` offer those names in `--backend` via the
+  new `router.available_backends()`.
+
+**Status: ✅ live-verified 2026-09-09.** The first key supplied that day was rejected by
+OpenRouter itself (92 chars containing a `#`, not the `sk-or-v1-<64 hex>` shape it issues;
+`GET /api/v1/key` returned `401 {"message":"Missing Authentication header"}` for it, and so
+did plain `curl` — note that `GET /models` returning 200 proves nothing, it's public). The
+replacement key works, and `nex-agi/nex-n2.5-mini:free` routes correctly:
+
+| command | result | latency |
+| --- | --- | --- |
+| "open github.com" | `open_url(url='https://github.com')` | 5.7s |
+| "open Claude Code" | `open_app(name='Claude Code')` | 2.7s |
+| "pull up my email" | `open_app(name='Mail')` | 4.8s |
+| "log me into github" | `open_portal(url='https://github.com/login')` | 4.6s |
+| "open my thesis notes and tell me what the login module does" | `run_claude_code(...)`, then the "where is it?" follow-up fired correctly | 7.5s |
+| "what time is it" | plain reply, no tool — correct, there's no clock tool | 6.1s |
+
+So 2.7-7.5s, against 0.7-3.7s for LAN Ollama and 40-100s for the free NVIDIA tier. Slower
+than the Ollama box but it answers **with the PC off**, which is the whole reason to have
+it. `config/jarvis.json` and DEFAULTS now name that model as OpenRouter's fallback; note
+the `:free` suffix is part of the slug, and whatever model you swap in must list `tools` in
+its `supported_parameters` (`GET {base_url}/models`) or it can't route anything.
+
+Unrelated gap this surfaced (**not** a backend problem, left alone deliberately): the model
+sent `project='thesis notes'` for "my thesis notes", and `projects.py` matches aliases
+exactly (`aliases().get(name)`), so the configured `"my thesis notes"` alias missed. The
+follow-up question handled it gracefully, so this is a resolver nicety for the Phase 6
+memory work, not a break.
+
 ### How to test Phase 2 (do these in order)
 
 1. **Offline, works right now, no key needed** — the loop and all four backends' message
    translation:
    ```
-   .venv/bin/python3 scripts/selftest_brain.py     # 28 checks, currently all passing
+   .venv/bin/python3 scripts/selftest_brain.py     # 48 checks, currently all passing
    ```
 2. **Add a key.** Free NVIDIA route: make an account at https://build.nvidia.com, generate an
    `nvapi-...` key, put it in `secrets/api_keys.json` as `"nvidia": "nvapi-..."`, and copy the
    exact model id from that site's model page into `config/jarvis.json` if you pick a different
    model than `meta/llama-3.3-70b-instruct` (it must be one that supports tool/function
    calling — that's the whole thing being tested). Same idea for `"claude"` / `"openai"`, or
-   export `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `NVIDIA_API_KEY` instead.
+   put `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `NVIDIA_API_KEY` / `OPENROUTER_API_KEY` in
+   `.env` instead (copy `.env.example`) — see the 2026-09-09 note above.
    For Ollama: `ollama serve` then `ollama pull granite4.1:3b` (see the Phase 3
    "Local models" note — it can run on another machine on your LAN).
 3. **Test the brain on its own** (nothing opens — tools are dry-run by default):
@@ -715,11 +793,12 @@ Setup was `OLLAMA_HOST=0.0.0.0:11434` on the PC, firewall open on 11434, and
 | "…use claude code to say what the followup module does" | **1.8s** | ~60-90s |
 | the "where is it?" pair | **1.4s + 1.6s** | ~40s + ~30s |
 
-`config/jarvis.json`'s `backend` is now **`ollama`**. The free NVIDIA tier had degraded to
+The default backend became **`ollama`** here. The free NVIDIA tier had degraded to
 40-100s per routing call, which is unusable for a push-to-talk assistant; a 3B model on a
 six-year-old GPU one room away answers in under two seconds. The obvious cost: **Jarvis has
-no brain when the PC is off.** Change that one word back to `nvidia` when working away from
-it — and note that the sub-agent itself is unaffected either way, since Claude Code brings
+no brain when the PC is off.** Switch backends when working away from it — as of the
+2026-09-09 note that's `JARVIS_BACKEND=` in `.env` rather than a word in
+`config/jarvis.json` — and note that the sub-agent itself is unaffected either way, since Claude Code brings
 its own model.
 
 **Two bugs the local model found that the hosted one had been hiding:**

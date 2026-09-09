@@ -1,11 +1,19 @@
 """
 Model Router — Phase 2.
 
-`get_backend("claude" | "openai" | "nvidia" | "ollama")` is the whole public surface:
-everything above it (the agent loop) talks to the `Backend` protocol in
+`get_backend("claude" | "openai" | "nvidia" | "openrouter" | "ollama")` is the
+whole public surface: everything above it (the agent loop) talks to the
+`Backend` protocol in
 `jarvis.router.base` and never imports a vendor SDK directly. Backends are
 constructed lazily and import their SDK lazily, so a missing `openai` install
 or a missing Ollama server only ever affects the backend you actually asked for.
+
+Which one runs is a config/environment decision, never a code one:
+`JARVIS_BACKEND=openrouter` in `.env` (or `"backend"` in `config/jarvis.json`)
+is the entire switch. And because most vendors now speak the OpenAI dialect,
+*adding* a provider is also config-only — any name that appears in
+`config/jarvis.json`'s `backends` with a `base_url` is served by the OpenAI
+backend even if it has no entry in BACKENDS below (see get_backend).
 """
 from __future__ import annotations
 
@@ -37,6 +45,14 @@ def _nvidia(model: str | None = None) -> Backend:
     return OpenAIBackend(model=model, provider="nvidia")
 
 
+def _openrouter(model: str | None = None) -> Backend:
+    # OpenRouter is also the OpenAI dialect — one key in front of many vendors'
+    # models, at https://openrouter.ai/api/v1.
+    from jarvis.router.openai_backend import OpenAIBackend
+
+    return OpenAIBackend(model=model, provider="openrouter")
+
+
 def _ollama(model: str | None = None) -> Backend:
     from jarvis.router.ollama import OllamaBackend
 
@@ -44,10 +60,30 @@ def _ollama(model: str | None = None) -> Backend:
 
 
 BACKENDS.update(
-    {"claude": _claude, "openai": _openai, "nvidia": _nvidia, "ollama": _ollama}
+    {
+        "claude": _claude,
+        "openai": _openai,
+        "nvidia": _nvidia,
+        "openrouter": _openrouter,
+        "ollama": _ollama,
+    }
 )
 
 BACKEND_NAMES = tuple(BACKENDS)
+
+
+def available_backends() -> tuple[str, ...]:
+    """Every backend name `get_backend` will accept, registered or config-only.
+
+    Used for `--backend` choices in scripts/, so a provider you added to
+    config/jarvis.json by hand is offered there too.
+    """
+    configured = tuple(
+        name
+        for name, entry in config.load_config().get("backends", {}).items()
+        if name not in BACKENDS and isinstance(entry, dict) and entry.get("base_url")
+    )
+    return BACKEND_NAMES + configured
 
 
 def get_backend(name: str | None = None, model: str | None = None) -> Backend:
@@ -59,15 +95,28 @@ def get_backend(name: str | None = None, model: str | None = None) -> Backend:
     """
     name = (name or config.default_backend()).lower()
     factory = BACKENDS.get(name)
-    if factory is None:
-        raise BackendError(
-            f"Unknown backend {name!r}. Available: {', '.join(BACKEND_NAMES)}."
-        )
-    return factory(model)
+    if factory is not None:
+        return factory(model)
+
+    # Not registered — but if config/jarvis.json declares it with a base_url,
+    # take it at its word and treat it as another OpenAI-dialect endpoint.
+    # That's what makes "point Jarvis at a new provider" a config edit.
+    entry = config.backend_config(name)
+    if entry.get("base_url"):
+        from jarvis.router.openai_backend import OpenAIBackend
+
+        return OpenAIBackend(model=model, provider=name)
+
+    raise BackendError(
+        f"Unknown backend {name!r}. Available: {', '.join(available_backends())}. "
+        "To add another OpenAI-compatible provider, give it a `base_url` under "
+        "`backends` in config/jarvis.json."
+    )
 
 
 __all__ = [
     "BACKEND_NAMES",
+    "available_backends",
     "Backend",
     "BackendError",
     "Completion",

@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from jarvis import claude_code, projects, tools  # noqa: E402
 from jarvis.agent import Agent  # noqa: E402
 from jarvis.config import actions_config  # noqa: E402
-from jarvis.router import BACKEND_NAMES  # noqa: E402
+from jarvis.router import available_backends  # noqa: E402
 
 # The command Phase 3's Definition of done names, in the shape Whisper would
 # hand over: no punctuation, lowercase, project named the way you'd say it.
@@ -116,7 +116,7 @@ def main() -> int:
     parser.add_argument("--project", default="jarvis", help="project for --claude-code")
     parser.add_argument("--claude-code", metavar="TASK", help="run the sub-agent tool directly")
     parser.add_argument("--portal", metavar="URL", help="run the browser tool directly")
-    parser.add_argument("--backend", choices=BACKEND_NAMES, help="override the configured backend")
+    parser.add_argument("--backend", choices=available_backends(), help="override the configured backend")
     parser.add_argument("--model", help="override that backend's model id")
     parser.add_argument(
         "--for-real",

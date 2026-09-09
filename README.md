@@ -5,8 +5,8 @@ watches for hand gestures through the webcam, executes real tasks (opening porta
 logging you in, driving Claude Code to fix bugs), and talks back in a natural voice.
 
 Runs as a macOS background daemon. The "brain" is model-agnostic — you can point it
-at Claude, GPT, or a local Ollama model and swap between them as you learn what
-works best.
+at Claude, GPT, OpenRouter, NVIDIA NIM, or a local Ollama model, and swapping between
+them is one line in `.env` (`JARVIS_BACKEND=openrouter`), not a code change.
 
 ## Reading order
 
@@ -44,8 +44,11 @@ finish from the microphone, blocked by the loop having no memory between utteran
 
 ## Decisions already locked in
 
-- **Model backend:** pluggable/model-agnostic. Claude, GPT, and local Ollama models
-  all sit behind one interface so you can A/B them per-task instead of committing early.
+- **Model backend:** pluggable/model-agnostic. Claude, GPT, OpenRouter, NVIDIA NIM and
+  local Ollama models all sit behind one interface, selected by `JARVIS_BACKEND` in
+  `.env` (copy `.env.example`), so you can A/B them per-task instead of committing early.
+  Any other OpenAI-compatible provider needs only a `base_url` under `backends` in
+  `config/jarvis.json` — no new code.
 - **Credentials:** you speak (or spell out) a username/password to Jarvis in the
   moment and it types it in for you. See doc 04 for how we keep that from being
   reckless.

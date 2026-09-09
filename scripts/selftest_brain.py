@@ -149,8 +149,9 @@ print("\nbackend registry")
 
 from jarvis.router import BACKEND_NAMES, get_backend  # noqa: E402
 
-check("all four backends are registered",
-      set(BACKEND_NAMES) == {"claude", "openai", "nvidia", "ollama"}, str(BACKEND_NAMES))
+check("all five backends are registered",
+      set(BACKEND_NAMES) == {"claude", "openai", "nvidia", "openrouter", "ollama"},
+      str(BACKEND_NAMES))
 nvidia = get_backend("nvidia")
 check("nvidia is the OpenAI dialect pointed at NVIDIA's endpoint",
       isinstance(nvidia, OpenAIBackend)
@@ -159,6 +160,126 @@ check("nvidia is the OpenAI dialect pointed at NVIDIA's endpoint",
       f"{type(nvidia).__name__} {nvidia.name} {nvidia.base_url}")
 check("nvidia keeps its own model id, not OpenAI's",
       nvidia.model != get_backend("openai").model, nvidia.model)
+openrouter = get_backend("openrouter")
+check("openrouter is the OpenAI dialect pointed at OpenRouter's endpoint",
+      isinstance(openrouter, OpenAIBackend)
+      and openrouter.name == "openrouter"
+      and openrouter.base_url == "https://openrouter.ai/api/v1",
+      f"{type(openrouter).__name__} {openrouter.name} {openrouter.base_url}")
+check("openrouter sends its attribution headers",
+      "X-Title" in openrouter.headers, str(openrouter.headers))
+check("a backend with no headers block sends none", get_backend("nvidia").headers == {})
+
+# The config-only path: a provider Jarvis has never heard of, declared in
+# config/jarvis.json with a base_url, is served by the OpenAI backend. This is
+# what makes "point Jarvis at another provider" a config edit and not a commit.
+from jarvis import config as _config  # noqa: E402
+from jarvis.router import BackendError  # noqa: E402
+
+_real_backend_config = _config.backend_config
+_config.backend_config = lambda name: (
+    {"model": "llama-3.3-70b", "base_url": "https://api.groq.com/openai/v1"}
+    if name == "groq" else _real_backend_config(name)
+)
+try:
+    groq = get_backend("groq")
+    check("an unregistered provider with a base_url still works",
+          isinstance(groq, OpenAIBackend)
+          and groq.name == "groq"
+          and groq.model == "llama-3.3-70b",
+          f"{type(groq).__name__} {groq.name} {groq.model}")
+finally:
+    _config.backend_config = _real_backend_config
+
+try:
+    get_backend("nonesuch")
+    check("a truly unknown backend raises", False, "no error raised")
+except BackendError as exc:
+    check("a truly unknown backend raises BackendError", "nonesuch" in str(exc), str(exc))
+
+
+print("\nthe environment layer")
+
+import os  # noqa: E402
+
+from jarvis import config  # noqa: E402
+
+
+def with_env(**overrides):
+    """Run load_config() with these env vars set, then put the environment back."""
+    saved = {k: os.environ.get(k) for k in overrides}
+    try:
+        for key, value in overrides.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return config.load_config()
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+cfg = with_env(JARVIS_BACKEND="nvidia")
+check("JARVIS_BACKEND picks the backend", cfg["backend"] == "nvidia", cfg["backend"])
+
+cfg = with_env(JARVIS_BACKEND="ollama", JARVIS_MODEL="llama3.1:8b")
+check("JARVIS_MODEL follows whichever backend is selected",
+      cfg["backends"]["ollama"]["model"] == "llama3.1:8b",
+      str(cfg["backends"]["ollama"]))
+check("...and leaves the other backends' models alone",
+      cfg["backends"]["nvidia"]["model"] == "openai/gpt-oss-20b",
+      str(cfg["backends"]["nvidia"]))
+
+cfg = with_env(JARVIS_OLLAMA_HOST="http://10.0.0.9:11434")
+check("per-backend vars work regardless of the active backend",
+      cfg["backends"]["ollama"]["host"] == "http://10.0.0.9:11434",
+      str(cfg["backends"]["ollama"]))
+
+cfg = with_env(JARVIS_SPEECH_ENABLED="false", JARVIS_TIMEOUT="15")
+check("'false' becomes a boolean, not a truthy string",
+      cfg["speech"]["enabled"] is False, repr(cfg["speech"]["enabled"]))
+active = cfg["backend"]
+check("a numeric var becomes an int",
+      cfg["backends"][active]["timeout"] == 15,
+      repr(cfg["backends"][active].get("timeout")))
+
+check("_coerce leaves a model id alone",
+      config._coerce("openai/gpt-oss-20b") == "openai/gpt-oss-20b")
+check("_coerce reads null as None", config._coerce("null") is None)
+
+# .env parsing. An API key can contain a '#', so inline-comment stripping is
+# deliberately *not* implemented — this pins that.
+tmp = Path(__file__).resolve().parent / ".selftest.env"
+tmp.write_text(
+    "# a comment\n\n"
+    "export JARVIS_SELFTEST_A=plain\n"
+    'JARVIS_SELFTEST_B="quoted value"\n'
+    "JARVIS_SELFTEST_C=key#with#hashes\n"
+    "not-an-assignment\n"
+)
+try:
+    for key in ("JARVIS_SELFTEST_A", "JARVIS_SELFTEST_B", "JARVIS_SELFTEST_C"):
+        os.environ.pop(key, None)
+    loaded = config.load_dotenv(tmp)
+    check("export prefix is stripped", loaded.get("JARVIS_SELFTEST_A") == "plain", str(loaded))
+    check("quotes are stripped", loaded.get("JARVIS_SELFTEST_B") == "quoted value", str(loaded))
+    check("a '#' inside a value survives",
+          loaded.get("JARVIS_SELFTEST_C") == "key#with#hashes", str(loaded))
+    check("lines without '=' are skipped", len(loaded) == 3, str(loaded))
+    check(".env reaches os.environ", os.environ.get("JARVIS_SELFTEST_A") == "plain")
+
+    os.environ["JARVIS_SELFTEST_A"] = "already set"
+    config.load_dotenv(tmp)
+    check("a real env var wins over .env",
+          os.environ["JARVIS_SELFTEST_A"] == "already set")
+finally:
+    tmp.unlink(missing_ok=True)
+    for key in ("JARVIS_SELFTEST_A", "JARVIS_SELFTEST_B", "JARVIS_SELFTEST_C"):
+        os.environ.pop(key, None)
 
 
 print("\nargument parsing")

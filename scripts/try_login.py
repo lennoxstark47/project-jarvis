@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from jarvis import confirm, credentials, redact, speech, tools, vault  # noqa: E402
 from jarvis.agent import Agent  # noqa: E402
-from jarvis.router import BACKEND_NAMES  # noqa: E402
+from jarvis.router import available_backends  # noqa: E402
 
 DEFAULT_PORTAL = "https://the-internet.herokuapp.com/login"
 
@@ -191,7 +191,7 @@ def main() -> int:
     parser.add_argument("--keychain", metavar="SITE", help="show what's saved for SITE")
     parser.add_argument("--forget", action="store_true", help="with --keychain: delete it")
     parser.add_argument("--portal", default=DEFAULT_PORTAL, help="the login page to open")
-    parser.add_argument("--backend", choices=BACKEND_NAMES, help="override the configured backend")
+    parser.add_argument("--backend", choices=available_backends(), help="override the configured backend")
     parser.add_argument("--model", help="override that backend's model id")
     parser.add_argument(
         "--for-real",

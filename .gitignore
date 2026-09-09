@@ -17,3 +17,6 @@ secrets/*
 
 # Generated knowledge graph (regenerate with `graphify update .`)
 graphify-out/
+
+# Local environment (backend selection + keys)
+.env

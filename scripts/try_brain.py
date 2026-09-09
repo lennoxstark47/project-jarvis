@@ -34,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from jarvis.agent import Agent  # noqa: E402 - path insert must happen first
-from jarvis.router import BACKEND_NAMES  # noqa: E402
+from jarvis.router import available_backends  # noqa: E402
 
 # The two commands Phase 2's Definition of done names explicitly.
 DEFAULT_COMMANDS = ["open github.com", "open Claude Code"]
@@ -63,7 +63,7 @@ def main() -> int:
     parser.add_argument(
         "--backend",
         action="append",
-        choices=BACKEND_NAMES,
+        choices=available_backends(),
         help="backend to try (repeatable; default: all three)",
     )
     parser.add_argument(
@@ -88,7 +88,7 @@ def main() -> int:
         # already carry the error. -v puts the full log back.
         logging.getLogger("jarvis").setLevel(logging.CRITICAL)
 
-    backends = args.backend or list(BACKEND_NAMES)
+    backends = args.backend or list(available_backends())
     commands = args.command or DEFAULT_COMMANDS
 
     for command in commands:

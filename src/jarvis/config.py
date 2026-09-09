@@ -1,5 +1,5 @@
 """
-Configuration & API-key resolution — Phases 2-3.
+Configuration & API-key resolution — Phases 2-5.
 
 Everything Jarvis needs to pick a brain lives in one JSON file,
 `config/jarvis.json` (created on first read with the defaults below), so
@@ -31,6 +31,14 @@ a file that only overrides some of them still inherits the rest.
 Phase 4 added a `speech` block (which voice reads the replies out) and an
 `actions.login` block (what the login tool is allowed to do).
 
+Phase 5 added an **environment layer** on top of that file, so switching brains
+is a one-line edit rather than a JSON surgery: `.env` in the project root (or
+any real environment variable) wins over `config/jarvis.json`, which wins over
+DEFAULTS. `JARVIS_BACKEND=openrouter` is the whole switch; see ENV_OVERRIDES
+below for the per-backend knobs (`JARVIS_MODEL`, `JARVIS_OLLAMA_HOST`, ...).
+`.env` is read once at import and never overrides a variable the process was
+already started with, so a launchd plist's `EnvironmentVariables` still wins.
+
 API keys are deliberately *not* in that file — it's committed-adjacent and
 easy to `cat` into a terminal by accident. They're read from the environment
 first, then from `secrets/api_keys.json` (the `secrets/` directory Phase 0
@@ -53,6 +61,7 @@ logger = logging.getLogger("jarvis.config")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "config" / "jarvis.json"
 SECRETS_PATH = PROJECT_ROOT / "secrets" / "api_keys.json"
+ENV_PATH = PROJECT_ROOT / ".env"
 
 DEFAULTS: dict[str, Any] = {
     # Which backend the agent loop uses by default. One of the keys below.
@@ -94,6 +103,33 @@ DEFAULTS: dict[str, Any] = {
             "model": "openai/gpt-oss-20b",
             "base_url": "https://integrate.api.nvidia.com/v1",
             "timeout": 60,
+        },
+        # OpenRouter is one key in front of most of the industry's models, and
+        # also OpenAI-dialect — so, like nvidia above, it's the same backend
+        # class aimed somewhere else. Keys come from
+        # https://openrouter.ai/keys and are normally `sk-or-v1-...`.
+        #
+        # nex-agi/nex-n2.5-mini:free is the current default, measured
+        # 2026-09-09: correct tool calls on all four test commands in 2.7-7.5s,
+        # 262k context, and free. Model slugs are `vendor/model` exactly as
+        # https://openrouter.ai/models lists them, and the `:free` suffix is
+        # part of the slug — dropping it asks for the paid variant. Free models
+        # carry stricter rate limits, so if routing starts failing under load
+        # this is the first thing to change. Whatever you pick must list
+        # `tools` in its supported_parameters (check GET {base_url}/models);
+        # a model without tool support can't route anything.
+        #
+        # `headers` is OpenRouter-specific and optional: it attributes calls to
+        # this app on your dashboard and in their public rankings. Nothing
+        # about a request depends on it.
+        "openrouter": {
+            "model": "nex-agi/nex-n2.5-mini:free",
+            "base_url": "https://openrouter.ai/api/v1",
+            "timeout": 60,
+            "headers": {
+                "HTTP-Referer": "https://github.com/local/project_jarvis",
+                "X-Title": "Jarvis",
+            },
         },
         "ollama": {
             # granite4.1:3b, measured 2026-09-08: 2.1 GB, tool-calling declared
@@ -270,11 +306,45 @@ DEFAULTS: dict[str, Any] = {
     },
 }
 
+# --- the environment layer ---------------------------------------------------
+#
+# Which env var maps onto which config path. The point is that changing brains
+# is `JARVIS_BACKEND=openrouter` in .env and nothing else — no JSON editing, no
+# code edit, and the same variable works whether Jarvis is started from a
+# shell, from launchd, or from the .app.
+#
+# Values are dotted paths into the config dict. Two shapes exist:
+#   "backends.*.model" — the `*` is filled in with the *active* backend, so one
+#                        JARVIS_MODEL follows whichever backend is selected.
+#   "backends.nvidia.model" — an explicit, per-backend override.
+# The second shape is generated for every backend name in DEFAULTS below, so a
+# new backend gets its whole set of variables for free.
+ENV_OVERRIDES: dict[str, str] = {
+    "JARVIS_BACKEND": "backend",
+    "JARVIS_MODEL": "backends.*.model",
+    "JARVIS_BASE_URL": "backends.*.base_url",
+    "JARVIS_TIMEOUT": "backends.*.timeout",
+    "JARVIS_SPEECH_ENABLED": "speech.enabled",
+    "JARVIS_SPEECH_BACKEND": "speech.backend",
+    "JARVIS_SPEECH_VOICE": "speech.backends.say.voice",
+    "JARVIS_ALLOW_EDITS": "actions.claude_code.allow_edits",
+}
+
+for _name, _entry in DEFAULTS["backends"].items():
+    for _field in _entry:
+        if isinstance(_entry[_field], dict):  # e.g. openrouter's `headers`
+            continue
+        ENV_OVERRIDES[f"JARVIS_{_name.upper()}_{_field.upper()}"] = (
+            f"backends.{_name}.{_field}"
+        )
+del _name, _entry, _field
+
 # env var checked first for each backend's key
 ENV_KEYS = {
     "claude": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 
@@ -293,13 +363,126 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def load_dotenv(path: Path = ENV_PATH) -> dict[str, str]:
+    """Read `.env` into os.environ, without clobbering what's already set.
+
+    Deliberately a dozen lines rather than a dependency: the format Jarvis
+    needs is `KEY=value` per line, `#` comments, optional surrounding quotes,
+    and an optional `export ` prefix so the same file can be `source`d in a
+    shell. Anything fancier belongs in the shell, not here.
+
+    Real environment variables win, so `JARVIS_BACKEND=ollama .venv/bin/python3
+    run.py` overrides the file for one run, and a launchd plist's
+    `EnvironmentVariables` overrides it permanently.
+    """
+    if not path.exists():
+        return {}
+    loaded: dict[str, str] = {}
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as exc:
+        logger.error("Could not read %s (%s).", path, exc)
+        return {}
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if not key:
+            continue
+        loaded[key] = value
+        os.environ.setdefault(key, value)
+    if loaded:
+        logger.debug("Loaded %d name(s) from %s", len(loaded), path)
+    return loaded
+
+
+# Read once, at import, so every later config read sees the same environment.
+load_dotenv()
+
+
+def _coerce(value: str) -> Any:
+    """Turn an env var's string into the JSON type the config field expects.
+
+    Env vars are always strings; `"timeout": "60"` and `"enabled": "false"`
+    would both be silently wrong (the latter is *truthy*). JSON's own literals
+    are the least surprising rule here — `null`, `true`, `60`, `0.5` — and
+    anything that isn't valid JSON stays the plain string it was, which is what
+    a model id or a URL needs.
+    """
+    text = value.strip()
+    if text == "":
+        return ""
+    lowered = text.lower()
+    if lowered in {"null", "none"}:
+        return None
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _set_path(target: dict[str, Any], dotted: str, value: Any) -> None:
+    """Assign `value` at a dotted path, creating intermediate dicts as needed."""
+    keys = dotted.split(".")
+    cursor = target
+    for key in keys[:-1]:
+        nxt = cursor.get(key)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cursor[key] = nxt
+        cursor = nxt
+    cursor[keys[-1]] = value
+
+
+def _apply_env_overrides(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Overlay ENV_OVERRIDES onto an already-merged config.
+
+    Applied last, so precedence is env > config/jarvis.json > DEFAULTS.
+    `JARVIS_BACKEND` is resolved first because the wildcard paths
+    (`backends.*.model`) mean "the backend that is actually selected" — setting
+    JARVIS_BACKEND=openrouter and JARVIS_MODEL=... in the same .env has to
+    point the model at OpenRouter, not at whatever the JSON file named.
+    """
+    selected = os.environ.get("JARVIS_BACKEND")
+    if selected:
+        cfg["backend"] = selected.strip().lower()
+
+    for env_name, dotted in ENV_OVERRIDES.items():
+        if env_name == "JARVIS_BACKEND":
+            continue
+        raw = os.environ.get(env_name)
+        if raw is None:
+            continue
+        path = dotted.replace("*", str(cfg.get("backend", DEFAULTS["backend"])))
+        _set_path(cfg, path, _coerce(raw))
+        logger.debug("%s overrode %s", env_name, path)
+    return cfg
+
+
 def load_config() -> dict[str, Any]:
-    """Read config/jarvis.json, writing the defaults out if it doesn't exist."""
+    """Read config/jarvis.json, writing the defaults out if it doesn't exist.
+
+    Returns DEFAULTS <- the file <- the environment (see _apply_env_overrides).
+    """
     if not CONFIG_PATH.exists():
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(DEFAULTS, indent=2) + "\n")
         logger.info("Wrote default config to %s", CONFIG_PATH)
-        return dict(DEFAULTS)
+        return _apply_env_overrides(_deep_merge(DEFAULTS, {}))
 
     try:
         user_config = json.loads(CONFIG_PATH.read_text())
@@ -307,9 +490,9 @@ def load_config() -> dict[str, Any]:
         # A typo'd config shouldn't take the whole assistant down — fall back to
         # defaults, loudly.
         logger.error("Could not read %s (%s) — using defaults.", CONFIG_PATH, exc)
-        return dict(DEFAULTS)
+        return _apply_env_overrides(_deep_merge(DEFAULTS, {}))
 
-    return _deep_merge(DEFAULTS, user_config)
+    return _apply_env_overrides(_deep_merge(DEFAULTS, user_config))
 
 
 def backend_config(name: str) -> dict[str, Any]:
@@ -377,7 +560,9 @@ def api_key(backend: str) -> str | None:
     using isn't an error, and the backend itself reports a clear failure if it
     is the one being used.
     """
-    env_name = ENV_KEYS.get(backend)
+    # A provider added to config/jarvis.json by hand has no ENV_KEYS entry, so
+    # fall back to the obvious name — "groq" reads GROQ_API_KEY.
+    env_name = ENV_KEYS.get(backend) or f"{backend.upper().replace('-', '_')}_API_KEY"
     if env_name and os.environ.get(env_name):
         return os.environ[env_name]
 

@@ -14,9 +14,11 @@ backend's translation is the closest thing to a "neutral" one:
 
 Because that shape is the de-facto standard, this class is generic over the
 endpoint: point `base_url` at any OpenAI-compatible provider and it works
-unchanged. That's how the `nvidia` backend is implemented — NVIDIA's NIM API
-(free tier, https://build.nvidia.com) is this same class aimed at
-`https://integrate.api.nvidia.com/v1` with its own key and model id.
+unchanged. That's how the `nvidia` and `openrouter` backends are implemented —
+NVIDIA's NIM API (free tier, https://build.nvidia.com) and OpenRouter
+(https://openrouter.ai/api/v1) are this same class aimed elsewhere, each with
+its own key, model id and optional extra headers. Which one runs is decided by
+`JARVIS_BACKEND` / config/jarvis.json, never here.
 
 Named `openai_backend.py` rather than `openai.py` so it can never shadow the
 `openai` package it imports.
@@ -51,9 +53,16 @@ class OpenAIBackend:
         """
         cfg = config.backend_config(provider)
         self.name = provider
-        self.model = model or cfg.get("model", "gpt-4o")
+        self.model = model or cfg.get("model") or "gpt-4o"
         self.base_url = base_url or cfg.get("base_url")
-        self.timeout = cfg.get("timeout", 60)
+        self.timeout = cfg.get("timeout") or 60
+        # Optional per-provider request headers. OpenRouter uses HTTP-Referer /
+        # X-Title to attribute calls; nothing functional depends on them, so a
+        # provider that doesn't want them just omits the block.
+        raw_headers = cfg.get("headers") or {}
+        self.headers = {
+            str(k): str(v) for k, v in raw_headers.items() if v not in (None, "")
+        }
         self._client = None
         self._openai = None
 
@@ -66,14 +75,20 @@ class OpenAIBackend:
 
             key = config.api_key(self.name)
             if not key:
-                env_name = config.ENV_KEYS.get(self.name, "OPENAI_API_KEY")
+                env_name = config.ENV_KEYS.get(
+                    self.name, f"{self.name.upper()}_API_KEY"
+                )
                 raise BackendError(
-                    f"No API key for the {self.name!r} backend. Set {env_name} or add "
+                    f"No API key for the {self.name!r} backend. Set {env_name} "
+                    f"in .env or the environment, or add "
                     f'{{"{self.name}": "..."}} to secrets/api_keys.json.'
                 )
             self._openai = openai
             self._client = openai.OpenAI(
-                api_key=key, base_url=self.base_url, timeout=self.timeout
+                api_key=key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+                default_headers=self.headers or None,
             )
         return self._client
 
