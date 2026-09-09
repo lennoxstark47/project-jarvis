@@ -22,17 +22,25 @@ scripts/try_actions.py.
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# Before any jarvis import: Phase 6's memory reads the environment layer at load
+# time, and a self-test must never write into the real memory/jarvis.db — see
+# FakeConfig below, and scripts/selftest_memory.py for the checks that do want a
+# store (they build their own, in a temporary directory).
+os.environ["JARVIS_MEMORY_ENABLED"] = "false"
+
+
 import json  # noqa: E402
 import shlex  # noqa: E402
 import time  # noqa: E402
 
-from jarvis import claude_code, config, followup, projects, terminal, tools  # noqa: E402
+from jarvis import claude_code, config, followup, memory, projects, terminal, tools  # noqa: E402
 from jarvis import agent as agent_module  # noqa: E402
 from jarvis.agent import Agent  # noqa: E402
 from jarvis.claude_code import _RunState, _handle_event, _summarize  # noqa: E402
@@ -52,19 +60,27 @@ class FakeConfig:
 
     The action layer reads config on every call (so editing the permission mode
     takes effect immediately), which makes this the natural way to test it.
+
+    `memory` defaults to off. Phase 6 made `jarvis.projects.aliases` read the
+    memory store, and a self-test must not write into (or read from) the real
+    `memory/jarvis.db` — a check that passes because of something the user
+    actually said to Jarvis last week is not a check.
     """
 
-    def __init__(self, actions: dict) -> None:
+    def __init__(self, actions: dict, memory_settings: dict | None = None) -> None:
         self._actions = actions
+        self._memory = memory_settings or {"enabled": False}
         self._original = None
 
     def __enter__(self):
         self._original = config.load_config
-        config.load_config = lambda: {"actions": self._actions}
+        config.load_config = lambda: {"actions": self._actions, "memory": self._memory}
+        memory.reset_for_tests()
         return self
 
     def __exit__(self, *_exc) -> None:
         config.load_config = self._original
+        memory.reset_for_tests()
 
 
 # --------------------------------------------------------------------------
@@ -644,7 +660,13 @@ with tempfile.TemporaryDirectory() as tmp:
             {
                 "projects": {"roots": [str(home / "Desktop")], "aliases": {}},
                 "claude_code": DEFAULT_CC,
-            }
+            },
+            # Memory on, but in this temporary directory: the alias learned
+            # below is Phase 6's, and it has to be checked somewhere that isn't
+            # the user's real store.
+            memory_settings={"enabled": True, "path": str(home / "memory.db"),
+                             "history_turns": 6, "history_ttl_seconds": 900,
+                             "max_facts": 6},
         ):
             followup.clear()
             spoken_backend = ScriptedBackend(
@@ -680,18 +702,32 @@ with tempfile.TemporaryDirectory() as tmp:
                 json.loads(config_file.read_text()) == {},
                 config_file.read_text(),
             )
+            check(
+                "...and leaves the memory store alone too",
+                memory.aliases() == [],
+                str(memory.aliases()),
+            )
             # The learning itself, tested directly — a dry run deliberately
             # skips it, so the seeded turn above can't be what proves it works.
-            config.save_alias("my invoicing thing", home / "Documents" / "client work")
+            # Phase 6 moved where this lands: a learned alias goes to the
+            # memory store, not into the user's hand-edited config file.
+            projects.learn("my invoicing thing", home / "Documents" / "client work")
             check(
                 "a real answer is learned, so it's asked exactly once per project",
-                json.loads(config_file.read_text())["actions"]["projects"]["aliases"]
+                memory.alias_map(memory.PROJECT)
                 == {"my invoicing thing": str(home / "Documents" / "client work")},
+                str(memory.alias_map()),
+            )
+            check(
+                "learning an alias never touches the file you edit by hand",
+                json.loads(config_file.read_text()) == {},
                 config_file.read_text(),
             )
             check(
-                "saving an alias preserves whatever else is in the file",
-                "actions" in json.loads(config_file.read_text()),
+                "and the resolver reads it back, so the name now works",
+                projects.resolve("my invoicing thing")
+                == (home / "Documents" / "client work").resolve(),
+                str(projects.resolve("my invoicing thing")),
             )
 
             followup.ask_where("mystery", "do the thing")

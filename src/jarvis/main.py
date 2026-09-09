@@ -55,7 +55,7 @@ from pathlib import Path
 import rumps
 from AppKit import NSStatusBar
 
-from jarvis import config, confirm, gestures, redact, speech
+from jarvis import config, confirm, gestures, memory, redact, speech
 from jarvis.agent import Agent
 from jarvis.permissions import check_camera, check_microphone
 from jarvis.voice import HOTKEY_NAME, PushToTalk
@@ -122,6 +122,8 @@ class JarvisApp(rumps.App):
             self.reply_item,
             self.status_item,
             self.gesture_item,
+            None,  # separator
+            "Forget This Conversation",
         ]
         self._status_item_elapsed = 0.0
         self._status_item_ever_on_screen = False
@@ -194,6 +196,31 @@ class JarvisApp(rumps.App):
     @rumps.clicked("Check Permissions")
     def check_permissions(self, _sender: rumps.MenuItem) -> None:
         self.run_permission_check()
+
+    # -- memory --------------------------------------------------------------
+
+    @rumps.clicked("Forget This Conversation")
+    def forget_conversation(self, _sender: rumps.MenuItem) -> None:
+        """Drop the rolling history window. Aliases and preferences stay.
+
+        Phase 6 made Jarvis carry a few minutes of conversation into every
+        request, which is what makes "open that one instead" mean anything. The
+        cost is that context you'd rather it didn't have is now context it does
+        have — a name you said aloud, a page you'd rather not be reminded of.
+        A window you cannot clear on demand is a window you end up not wanting;
+        this is the button, and it is one click from the same menu that shows
+        what Jarvis last heard.
+
+        Deliberately *not* "forget everything": an alias took a conversation to
+        teach, and a mis-click that silently unlearned them all would be worth
+        far more than the conversation it was aimed at. Aliases are dropped one
+        at a time, by name, from scripts/try_memory.py.
+        """
+        memory.clear_history()
+        logger.info("history cleared from the menu bar — %s", memory.describe())
+        with self._transcript_lock:
+            self._latest_transcript = NO_TRANSCRIPT
+            self._latest_reply = NO_REPLY
 
     # -- push-to-talk transcript ---------------------------------------------
 

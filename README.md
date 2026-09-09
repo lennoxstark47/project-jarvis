@@ -44,7 +44,16 @@ Firefox, and saved to the macOS Keychain once the site accepts it — with the m
 never seeing the characters and nothing submitting the form until you say so. One
 item is carried forward: the four-turn spoken login has never completed start to
 finish from the microphone, blocked by the loop having no memory between utterances
-(Phase 6). See the tracker. 
+(Phase 6). Phase 6 has now landed and unblocked it; the run itself still needs
+doing. See the tracker.
+
+Phase 6 is built: Jarvis remembers. A SQLite store under `memory/` holds names you
+teach it ("my project" → a folder, "the practice portal" → a URL), preferences like
+which voice reads replies out, and a short rolling window of the conversation — so
+"open my project" works in a session started days later, and "open that one instead"
+means something. Only the facts your sentence actually names are put in front of the
+model, and anything the credential layer touches is masked before it reaches the
+disk.
 
 `docs/00-IMPLEMENTATION_TRACKER.md` is the authoritative, per-task version of this
 — including what's been proven live versus only written.

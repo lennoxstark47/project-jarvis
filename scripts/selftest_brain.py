@@ -12,13 +12,25 @@ so they're pinned here rather than discovered later against a live API.
     .venv/bin/python3 scripts/selftest_brain.py
 
 Live behaviour (does a real model pick the right tool?) is scripts/try_brain.py.
+
+Runs with Phase 6's memory switched off, via the same `JARVIS_MEMORY_ENABLED`
+environment variable a user would use. Two reasons, and both are the point of
+this file: what is being pinned here is the loop's *control flow*, which must
+stay identical whether or not anything is remembered; and a self-test that
+wrote into the real `memory/jarvis.db` would both pollute what Jarvis knows
+about you and — since history is fed back into the next prompt — start passing
+or failing based on whatever the last run happened to say.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+# Before any jarvis import: config reads the environment layer at load time.
+os.environ["JARVIS_MEMORY_ENABLED"] = "false"
 
 from jarvis.agent import Agent  # noqa: E402
 from jarvis.router.base import Completion, Message, ToolCall, parse_arguments  # noqa: E402

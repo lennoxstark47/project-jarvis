@@ -65,6 +65,28 @@ itself (e.g. a `redact_secrets()` filter every log line passes through), not jus
 that gets forgotten under deadline pressure and silently leaks a password into a
 log file.
 
+*Extended 2026-09-09 (Phase 6).* The log stopped being the only place Jarvis
+writes what you said: `memory/jarvis.db` now holds a rolling window of the
+conversation, and a spoken login is *inside* that conversation. The same rule
+applies to it, with one addition that matters — redaction happens on the way
+**in**, not on the way out, so there is no moment at which the plaintext exists
+in that file and no future reader who can forget to ask. What is stored is the
+masked sentence ("log in as alice, my [credential omitted]"), which is the same
+string this point already sanctions for the log and the same one point 2 already
+sends to the cloud model. Refusing to store it at all was tried first and is
+worse: a spoken login is four turns long, and dropping the turns with
+credentials in them leaves the memory window holding only the half that doesn't
+explain what's happening. The file is created 0600 and lives under a gitignored
+directory. Enforced in `jarvis/memory.py:remember_turn`, pinned in
+`scripts/selftest_memory.py`.
+
+*Also Phase 6:* a **preference** set by voice is set from an untrusted string —
+Whisper's reconstruction, interpreted by a small model — so it can only reach
+the config paths in `config.PREFERENCE_KEYS`. That list deliberately excludes
+`actions.claude_code.allow_edits` and `actions.projects.roots`: the settings
+that decide whether the coding sub-agent may write to your files and which
+folders it may be launched in stay decisions you make in a file, by hand.
+
 **6. 2FA/OTP: explicitly out of scope for automation.**
 If a portal asks for a one-time code, that's a deliberate human-in-the-loop step —
 Jarvis should stop, tell you a code is needed, and let you type it (or read it to

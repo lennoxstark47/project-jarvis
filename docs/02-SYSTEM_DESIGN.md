@@ -120,6 +120,23 @@ theory, Claude-shaped in practice."
   short-term (recent conversation turns, for context) and long-term (aliases like
   "my project" → path, preferences like default voice/backend). Long-term memory
   is retrieved selectively per request, not dumped wholesale into every prompt.
+  - **Built 2026-09-09 (Phase 6)** — `jarvis/memory.py`, one database at
+    `memory/jarvis.db` (0600, gitignored), three tables: `aliases`,
+    `preferences`, `turns`. Selective retrieval turned out to need nothing
+    clever: an alias is relevant when its *name appears in the sentence*,
+    matched on the same normalized form `jarvis/projects.py` already uses, and
+    capped by `memory.max_facts`. No embeddings, no similarity search — the
+    thing being retrieved is a name the user chose and then said out loud, so
+    string matching is not an approximation of the right answer, it *is* the
+    right answer. Revisit only if memory ever holds something other than names.
+  - **Two rules that came out of building it, worth keeping past Phase 7:**
+    a turn is redacted on the way *in* (`jarvis/redact.py`), so the plaintext of
+    a spoken password never exists inside that file at any moment; and a
+    preference set by voice can only reach the config paths in
+    `config.PREFERENCE_KEYS` — never `actions.claude_code.allow_edits` or
+    `actions.projects.roots`, which decide what Jarvis may do to your files.
+    A preference arrives down the same untrusted path as every other spoken
+    instruction, so the settings that bound the blast radius are not on it.
 
 ### 4. Tool / Action layer
 Each tool is a small, testable function with a fixed input schema the model can
@@ -148,6 +165,14 @@ phase explicitly adds a tool:
     asks you to quit Firefox rather than failing obscurely.
 - Gesture-mapped meta-actions (`confirm`, `cancel`) — Phase 5, reuse the same tool
   contract voice already established.
+- `remember(name, value)`, `open_project(name)` — Phase 6. Two tools rather than
+  the zero this doc originally implied memory would need, and the reason is the
+  Definition of done: "open my project, days later" needs a way to *say* what
+  the name means and a way to *use* it, and neither existed. `remember` stores a
+  resolved value (a project name goes through `jarvis/projects.py` first), so a
+  misheard sentence fails while you're still listening instead of becoming a
+  permanent wrong answer; `open_project` opens a folder without the model ever
+  holding a filesystem path, exactly as `run_claude_code` does.
 
 ### 5. Credential vault
 See **doc 04** for the full design — summarized here only as a component: a

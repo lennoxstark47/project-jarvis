@@ -224,6 +224,14 @@ submits a login form.
   model backend per task type), and a rolling conversation history window.
 - Retrieval: pull relevant memory into the model context per request rather than
   dumping everything in (keeps latency and cost sane).
+- **Added 2026-09-09, during the phase:** two tools, `remember` and
+  `open_project`. Not in the original list, and worth being explicit about
+  because this phase's own ground rule is that the tool list grows only when a
+  phase says so. The Definition of done below is a sentence with two halves —
+  *telling* Jarvis what "my project" means, and *using* it — and nothing in
+  Phases 0-5 could do either. Before this, an alias could only be learned as a
+  side effect of Jarvis asking where a project was (`jarvis/followup.py`), and
+  nothing opened a folder at all.
 
 **Definition of done:** you can say "open my project" once you've told it what
 "my project" means, days later, without repeating the full path.

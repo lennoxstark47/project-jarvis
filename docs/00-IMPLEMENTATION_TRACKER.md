@@ -8,21 +8,23 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus: the voice path, not gestures.** Decided 2026-09-09, by you: *"we will
-work on the hand gestures later on, right now lot of things are left for voice command
-itself."* Phase 5 is **paused at 🔶 In progress** with everything built and its two
-remaining checks written down — it is picked up again by running the numbered list in
-its own section, not by re-reading this one.
+**Current focus: Phase 7 — multi-agent orchestration.** Phase 6 finished
+2026-09-09; the next command is **"start phase 7"**.
 
-What that leaves open on the voice side, in the order the docs already argue for:
-- Phase 4's carried-forward item — the four-turn spoken login has never completed *from
-  the microphone*. See "Where Phase 4 actually stands".
-- Phase 6 (memory), which is what actually unblocks it: each utterance is still a fresh
-  conversation, so nothing tells the model a login is already in progress, and a URL
-  said out loud still has to survive being reassembled by Whisper and a small model
-  rather than being remembered as an alias.
+Two things are open and neither blocks Phase 7:
 
-Phase 4 is otherwise ✅ Done, and Phase 5 does not depend on it.
+- **Phase 5 (gestures) is paused at 🔶 In progress**, deliberately, by your call
+  on 2026-09-09: *"we will work on the hand gestures later on, right now lot of
+  things are left for voice command itself."* Everything is built; what remains
+  is two verification runs that need a person in front of a camera. It is picked
+  up by running the numbered list in its own section, not by re-reading this one.
+- **Phase 4's carried-forward item** — the four-turn spoken login has never
+  completed *from the microphone*. Phase 6 is what the tracker said would unblock
+  it, and it now has: an utterance is no longer a fresh conversation, so the
+  window carries "a login is in progress" from one turn to the next, and a portal
+  URL can be remembered as an alias instead of surviving Whisper twice.
+  **That is unblocked, not verified** — nobody has run the login by voice since
+  memory landed. See "Where Phase 4 actually stands".
 
 **Status legend:** ☐ not started · 🔶 in progress · ✅ done · 🚫 blocked
 
@@ -1336,7 +1338,22 @@ box then. `.venv/bin/python3 run.py`, hold F9 for each:
   3. *"The password is SuperSecretPassword bang"* → it fills both fields and asks to submit.
   4. *"Yes"* → it submits and says where it landed.
   Then check `grep -i "SuperSecret\|password is" logs/jarvis.log` finds nothing. When that
-  passes, flip this phase to ✅ Done and move Current focus to Phase 5.
+  passes, tick the second half of this phase's Definition of done.
+
+**Update 2026-09-09 — Phase 6 landed, so both gaps above are now closed in code:**
+
+- *Conversation memory*: the loop carries a rolling window (`jarvis.memory.history`,
+  6 turns / 15 minutes by default), so turn 3 knows a login started at turn 2. Turn 2's
+  transcript is stored masked, on purpose — see Phase 6's note on why refusing it outright
+  was the wrong call and would have left this exact flow with holes in it.
+- *Saying a URL out loud*: teach it once instead. Say **"remember that the practice portal
+  is the-internet.herokuapp.com/login"**, or run
+  `scripts/try_memory.py --for-real --remember "the practice portal" the-internet.herokuapp.com/login`,
+  and then turn 1 becomes *"Open the practice portal"* — no domain spelled out, nothing for
+  Whisper to mangle. That alias is recalled into context whenever the phrase is said.
+
+**Still not verified**, because it needs the microphone and a person: run the four turns
+above with turn 1 replaced by the alias, and tick the box. Nothing else is outstanding.
 
 ---
 
@@ -1501,16 +1518,163 @@ hasn't happened either.
 ---
 
 ## Phase 6 — Memory & personalization
-Status: ☐ Not started
+Status: ✅ Done — 2026-09-09
 
-- ☐ SQLite memory store set up
-- ☐ Aliases (e.g. "my project" → path) storable/retrievable
-- ☐ Preferences (voice, default backend per task type) storable/retrievable
-- ☐ Selective retrieval into prompt context (not full dump)
-- **Definition of done:** "open my project" works days later without repeating the path
+- ✅ SQLite memory store set up — `src/jarvis/memory.py`, `memory/jarvis.db`
+  (0600, gitignored), three tables: `aliases`, `preferences`, `turns`
+- ✅ Aliases (e.g. "my project" → path) storable/retrievable — stored by the
+  `remember` tool and by the "where is that project?" answer, read back through
+  `jarvis.projects.aliases`
+- ✅ Preferences (voice, default backend per task type) storable/retrievable —
+  `memory.set_preference` / `memory.set_backend_for`, applied by
+  `config.speech_config` and `config.default_backend`
+- ✅ Selective retrieval into prompt context (not full dump) —
+  `memory.relevant_aliases` matches alias names against the sentence and caps at
+  `memory.max_facts`; plus a rolling conversation window with a turn count *and*
+  a TTL
+- ✅ **Definition of done:** "open my project" works without repeating the path
+  — **proven live 2026-09-09** (see "What was actually run" below). Proven across
+  a *cold process*, which is the mechanism the "days later" part rests on; the
+  only thing elapsed days add is time, which SQLite is indifferent to.
 
-Notes:
-- _(none yet)_
+Notes (2026-09-09):
+
+**What was built:**
+- `src/jarvis/memory.py` — the store. Doc 02's two kinds of memory, both behind
+  functions that never raise: every read and write swallows `sqlite3.Error` *and*
+  `OSError`, so a locked database or an unwritable disk degrades Jarvis to its
+  Phase 5 statelessness rather than costing the user the sentence they just said.
+- `src/jarvis/tools.py` — `remember` and `open_project`. Two tools this phase
+  did not originally plan for; `01-PHASE_PLAN.md` now records why (the
+  Definition of done is a sentence with two halves and neither existed).
+- `src/jarvis/agent.py` — the loop is finally conversational. `_context` puts
+  the recent turns and the relevant facts in front of the model; `_remember`
+  writes the exchange back afterwards.
+- `config/jarvis.json` — a `memory` block, plus `JARVIS_MEMORY_*` env overrides
+  on the same layering as Phase 5's backend switch.
+- `src/jarvis/main.py` — a "Forget This Conversation" menu item.
+- `scripts/selftest_memory.py` (93 offline checks) and `scripts/try_memory.py`
+  (`--remember`, `--forget`, `--set`, `--ask`, `--history`, ...).
+
+**The retrieval question turned out not to be a question.** Doc 02 asks for
+"retrieved selectively, not dumped wholesale", which reads like it wants
+embeddings and a similarity search. It doesn't: the thing being retrieved is a
+name *the user chose and then said out loud*, so matching the stored name
+against the sentence — on the same normalized form `jarvis/projects.py` already
+uses for project names — is not an approximation of the right answer, it is the
+right answer. Measured cost of a recall on a store with several aliases: below a
+millisecond, against 2.8-5.2s for the model call it feeds. Nothing here needs to
+get cleverer until memory holds something that isn't a name.
+
+**Where a learned alias lives changed, deliberately.** Phase 3 wrote them into
+`config/jarvis.json` (`config.save_alias`, now removed); they go to the memory
+store instead. Two alias layers now feed one resolver, and the config file wins
+on a name collision — a line you typed is a more deliberate statement than a
+sentence Whisper reconstructed. The reason for the move is narrower than
+"Phase 6 owns aliases": a voice assistant that edits a file you also edit by
+hand is a merge conflict waiting to be discovered at the worst possible moment.
+
+**⚠ A rule that only became necessary in this phase: a preference set by voice
+is set from an untrusted string.** It arrives down the same path as every other
+spoken instruction — Whisper's reconstruction, interpreted by a small model. So
+`config.PREFERENCE_KEYS` is a closed list of the config paths a preference may
+reach, and it deliberately excludes `actions.claude_code.allow_edits` and
+`actions.projects.roots`: the two settings that decide whether the coding
+sub-agent may write to your files and which folders it may be launched in. Those
+stay decisions made in a file, with your hands. Pinned in the self-test, because
+it is precisely the kind of boundary a later phase widens by accident.
+
+**⚠ The credential rule was written twice, and the first version was wrong.**
+The first draft *refused* to store any turn the redaction layer touched. That
+looks like the cautious choice and is actually the bad one: a spoken login is
+four turns long ("open the portal" / "my username is..." / "my password is..." /
+"yes"), so refusing those turns leaves the window holding exactly the half of
+the exchange that doesn't explain what's going on — which defeats the reason
+Phase 6 was prioritised over gestures at all. What ships stores the *masked*
+sentence ("log in as alice, my [credential omitted]"), which is the identical
+string Phase 4 already writes to `logs/jarvis.log` and already sends to the
+cloud model as the live transcript. Redaction happens on the way **in**, so
+there is no moment at which the plaintext exists inside `memory/jarvis.db`.
+
+**⚠ Every self-test that runs an agent turn now has to say so.** Adding memory
+made `Agent.handle` write to disk, and three older self-tests started quietly
+appending to the *user's real* `memory/jarvis.db` — `selftest_login` got as far
+as leaving "yes" and "Logged in — the page is now 'Dashboard'" in it, and
+`selftest_brain` then failed, because the window it had polluted was being fed
+back into the next prompt and the check on what the model was sent no longer
+matched. Two fixes, and both are worth knowing about when Phase 7 adds more
+state: `JARVIS_MEMORY_ENABLED=false` at the top of the three older files (the
+real environment layer, not a private hook), *and* a `memory` block inside each
+file's `FakeConfig` — because those patch `config.load_config` wholesale, which
+hides the environment layer along with everything else. `selftest_memory.py`
+builds its own store in a temporary directory instead.
+
+**A near-miss the self-test caught, not a review:** the "never raises" promise
+was only ever true for `sqlite3.Error`. The failures that actually happen — an
+unwritable directory, a full disk — surface as `OSError` from *opening* the
+file, before any query runs, and would have propagated all the way out of a
+turn. The degradation check (a database in a 0500 directory) is what found it.
+
+**Measured, on this Mac, live against OpenRouter/nex-n2.5-mini:free:**
+
+| | |
+|---|---|
+| recall for one utterance | **< 1 ms** — string matching, not a search |
+| "open my project", cold process, alias taught in an earlier one | **4.6-5.2s**, correct `open_project` call both times |
+| a follow-up in a *third* process ("what did I just ask you to open") | **2.8s**, answered correctly from the window alone |
+
+**What was actually run (the Definition of done, in three separate processes):**
+
+```
+.venv/bin/python3 scripts/try_memory.py --for-real --remember "my project" "project jarvis"
+    -> Remembered: my project means project_jarvis.
+# process exits
+
+.venv/bin/python3 scripts/try_memory.py --for-real --ask "open my project"
+    recalled for this sentence: ['"my project" means a project folder at .../project_jarvis']
+    tool: open_project(name='my project')  ->  Opened project_jarvis
+# process exits
+
+.venv/bin/python3 scripts/try_memory.py --ask "what did I just ask you to open"
+    history carried in: 2 turn(s)
+    says: You asked me to open the project folder `project_jarvis` in Finder.
+```
+
+**Deliberately not built, and each is somebody else's phase:**
+- **No tool sets a preference by voice.** Preferences are storable, retrievable
+  and *applied* (a stored voice reaches `jarvis/speech.py`), and settable from
+  `scripts/try_memory.py --set`. What's missing is a sentence like "use the
+  Daniel voice from now on" reaching them, which needs a third tool. The phase
+  asked for storable/retrievable; adding tools past what the Definition of done
+  needs is what `01-PHASE_PLAN.md`'s ground rule exists to prevent.
+- **Nothing classifies a task type.** `backend_for("coding")` stores and
+  `config.default_backend("coding")` honours it, but no caller passes a type,
+  because deciding what *kind* of request something is is Phase 7's router.
+- **No summarisation of old turns.** The window drops turns on a count and a
+  TTL. A summary of what fell off is a real feature and also a second place for
+  a small model to invent something; not worth it until the window is the thing
+  that's limiting.
+
+### How to test Phase 6
+
+1. **Offline, no model, no network** (never touches the real database):
+   ```
+   .venv/bin/python3 scripts/selftest_memory.py    # 93 checks
+   ```
+2. **What Jarvis remembers about you, right now:**
+   ```
+   .venv/bin/python3 scripts/try_memory.py
+   ```
+3. **The Definition of done — and it must be more than one process**, or all
+   you've proven is that a dict still holds what you put in it:
+   ```
+   .venv/bin/python3 scripts/try_memory.py --for-real --remember "my project" "project jarvis"
+   .venv/bin/python3 scripts/try_memory.py --for-real --ask "open my project"
+   ```
+4. **By voice, the real thing.** `.venv/bin/python3 run.py` (quit the
+   launchd-started `dist/Jarvis.app` first). Say *"remember that my project is
+   project jarvis"*, then — in a later session, after quitting and restarting —
+   say *"open my project"*.
 
 ---
 

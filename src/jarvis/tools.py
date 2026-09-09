@@ -1,5 +1,5 @@
 """
-Jarvis's tool contract — Phases 2-4.
+Jarvis's tool contract — Phases 2-6.
 
 This module is the *entire* set of things Jarvis is able to do. One schema per
 tool, described in backend-neutral JSON Schema; each backend in
@@ -17,6 +17,13 @@ explicitly adds a tool, never opportunistically.
   (jarvis.confirm) reached only by a human answer, because this tool list is
   precisely the surface a mis-transcribed sentence can reach, and doc 04's
   point 4 puts a person between "filled" and "submitted" on purpose.
+- Phase 6 adds `remember` and `open_project` (jarvis.memory, jarvis.projects) —
+  the two halves of doc 01's "open my project works days later": one to teach a
+  name, one to use it. `remember` is the first tool that writes something
+  lasting, so it stores a *resolved* value rather than the words it was given:
+  a project name is put through jarvis.projects (and its containment check)
+  before anything is saved, so a misheard sentence fails at the moment it's
+  said rather than becoming a permanent wrong answer.
 
 The bodies of the two Phase 3 tools are in their own modules; what lives here
 is the contract and the dispatch, so the list of what Jarvis can do stays
@@ -231,6 +238,65 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 }
             },
             "required": ["url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "remember",
+        "description": (
+            "Permanently remember what a name the user uses means, so they never have "
+            "to spell it out again. Use this whenever the user tells you what "
+            "something of theirs *is* — 'my project is project jarvis', 'remember the "
+            "billing portal is billing.example.com', 'call that one my thesis'.\n\n"
+            "Only for lasting facts about names. Do not use it to take notes, to "
+            "remember something for later in this conversation, or for anything the "
+            "user did not ask you to keep."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "What the user calls it, in their own words — 'my project', "
+                        "'the billing portal'. Not a tidied-up version."
+                    ),
+                },
+                "value": {
+                    "type": "string",
+                    "description": (
+                        "What it refers to: either a project the user has on their "
+                        "Mac (name it as they said it, e.g. 'project jarvis') or a "
+                        "web address (e.g. 'billing.example.com'). Jarvis works out "
+                        "which and checks it before saving anything."
+                    ),
+                },
+            },
+            "required": ["name", "value"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "open_project",
+        "description": (
+            "Open one of the user's project folders on their Mac, in Finder. Use this "
+            "when they ask to open a project, a folder, or something they have a "
+            "remembered name for ('open my project'). For a website use open_url; to "
+            "have Claude Code *work* on a project use run_claude_code instead — this "
+            "tool only shows the folder."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "The project as the user named it — a remembered name like "
+                        "'my project', or the folder's own name like 'project jarvis'."
+                    ),
+                }
+            },
+            "required": ["name"],
             "additionalProperties": False,
         },
     },
@@ -508,12 +574,92 @@ def fill_login_form(
     )
 
 
+def remember(
+    name: str = "",
+    value: str = "",
+    *,
+    dry_run: bool = False,
+    on_status: StatusFn | None = None,
+) -> str:
+    """Learn that `name` means `value`, for good — Phase 6's half of the DoD.
+
+    Two things happen before anything is written, and both are the point:
+
+    - **The kind is decided here, not by the model.** A value that looks like a
+      web address is stored as one; everything else is treated as a project.
+      Asking the model to classify would put a schema field between the user and
+      a permanent fact for no gain — the string itself says which it is.
+    - **The value is resolved before it is stored.** A project name goes through
+      `jarvis.projects.resolve`, so what lands in the database is a directory
+      that exists, inside the roots Jarvis is allowed to work in. A misheard
+      name therefore fails now, out loud, instead of being remembered wrong and
+      quietly opening the wrong folder in a month's time.
+    """
+    name = (name or "").strip()
+    value = (value or "").strip()
+    logger.info("tool remember(%r, %r)", name, value)
+    if not name or not value:
+        return "Error: I need both what to call it and what it refers to."
+
+    from jarvis import memory, projects
+
+    host = _host(normalize_url(value))
+    # A dot is required as well as a plausible TLD: `_has_real_tld` takes every
+    # two-letter ending on trust (they're all country codes), which without this
+    # would read a project called "ab" as a web address.
+    if _SCHEME_RE.match(value) or ("." in host and _has_real_tld(host)):
+        target, kind, spoken = normalize_url(value), memory.PORTAL, normalize_url(value)
+    else:
+        try:
+            resolved = projects.resolve(value)
+        except projects.ProjectError as exc:
+            # Spoken back verbatim: ProjectError messages are written to be
+            # heard ("that matches more than one project — which one?").
+            return f"I couldn't save that: {exc}"
+        target, kind, spoken = str(resolved), memory.PROJECT, resolved.name
+
+    if dry_run:
+        return f"(dry run — nothing was saved) Would remember that {name} means {spoken}."
+    if not memory.remember_alias(name, target, kind=kind):
+        return (
+            f"I couldn't save that — my memory isn't writable right now. "
+            f"Say 'remember {name}' again once that's fixed."
+        )
+    return f"Remembered: {name} means {spoken}."
+
+
+def open_project(
+    name: str = "", *, dry_run: bool = False, on_status: StatusFn | None = None
+) -> str:
+    """Open a project folder in Finder, by whatever the user calls it.
+
+    Routed through `jarvis.projects.resolve` rather than taking a path, for the
+    same reason `run_claude_code` is: the model never hands a filesystem path to
+    a subprocess, and the containment check is what makes a misheard name a
+    failure rather than a surprise.
+    """
+    name = (name or "").strip()
+    logger.info("tool open_project(%r)", name)
+
+    from jarvis import projects
+
+    try:
+        directory = projects.resolve(name)
+    except projects.ProjectError as exc:
+        return str(exc)
+
+    ok, detail = _run_open([str(directory)], dry_run=dry_run)
+    return f"{detail}Opened {directory.name}" if ok else f"Could not open {directory}: {detail}"
+
+
 HANDLERS: dict[str, Callable[..., str]] = {
     "open_url": open_url,
     "open_app": open_app,
     "run_claude_code": run_claude_code,
     "open_portal": open_portal,
     "fill_login_form": fill_login_form,
+    "remember": remember,
+    "open_project": open_project,
 }
 
 

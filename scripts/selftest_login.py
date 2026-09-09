@@ -27,11 +27,19 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+# Before any jarvis import: Phase 6's memory reads the environment layer at load
+# time, and a self-test must never write into the real memory/jarvis.db — see
+# FakeConfig below, and scripts/selftest_memory.py for the checks that do want a
+# store (they build their own, in a temporary directory).
+os.environ["JARVIS_MEMORY_ENABLED"] = "false"
+
 
 from jarvis import config, confirm, credentials, login, redact, speech, tools, vault  # noqa: E402
 from jarvis.agent import Agent  # noqa: E402
@@ -139,10 +147,18 @@ def use_browser(fake: FakeBrowser):
 
 
 class FakeConfig:
-    """Swap in an actions/speech config for the duration of a `with` block."""
+    """Swap in an actions/speech config for the duration of a `with` block.
+
+    Memory is off inside it, and that is not optional. Replacing `load_config`
+    wholesale hides the environment layer too, so the `JARVIS_MEMORY_ENABLED`
+    set at the top of this file stops applying here — and the confirmation
+    checks below run whole agent turns, which would otherwise write "yes" and
+    "Logged in" into the user's real memory/jarvis.db. Found exactly that way
+    on 2026-09-09.
+    """
 
     def __init__(self, **blocks) -> None:
-        self._blocks = blocks
+        self._blocks = {"memory": {"enabled": False}, **blocks}
 
     def __enter__(self):
         self._original = config.load_config

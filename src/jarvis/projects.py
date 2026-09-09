@@ -17,10 +17,19 @@ Two rules shape it:
   genuinely powerful tool — Claude Code can edit whatever is in the directory
   it's launched in, so which directory that can be is not the model's decision.
 
-Aliases here are the manual, config-file version of what doc 02's memory store
-("my project" -> path) does automatically in Phase 6. When that lands, it
-should feed this resolver rather than replace it — the containment check has to
-survive the upgrade.
+Aliases come from two places, and Phase 6 is what added the second. The
+config file (`actions.projects.aliases`) is the layer you edit by hand; the
+memory store (`jarvis.memory`) is the layer Jarvis writes when it learns
+something — from the spoken answer to "where is that project?", or from you
+saying "remember that my project is ...". The config layer wins on a name
+collision, because a line you typed is a more deliberate statement than a
+sentence Whisper reconstructed.
+
+That is the shape doc 02 asked for and the shape this module asked for when it
+said memory should "feed this resolver rather than replace it": an alias is a
+*fact* about which folder a name means. What that entitles anyone to do with
+the folder is still decided here, by `resolve`, and the containment check
+survived the upgrade untouched.
 
 **When it doesn't know** (round 2, 2026-09-08): rather than giving up, Jarvis
 asks out loud where the project is and listens for the answer —
@@ -38,7 +47,7 @@ import logging
 import re
 from pathlib import Path
 
-from jarvis import config
+from jarvis import config, memory
 
 logger = logging.getLogger("jarvis.projects")
 
@@ -76,7 +85,44 @@ def roots() -> list[Path]:
 
 
 def aliases() -> dict[str, str]:
-    return config.actions_config("projects").get("aliases", {}) or {}
+    """Every spoken name -> path Jarvis knows: learned ones, then hand-written.
+
+    Merged in that order so the config file wins — see the module docstring.
+    """
+    known = memory.alias_map(memory.PROJECT)
+    known.update(config.actions_config("projects").get("aliases", {}) or {})
+    return known
+
+
+def learn(name: str, path: str | Path) -> bool:
+    """Remember that `name` means `path`, permanently.
+
+    The one way an alias gets written. It goes to the memory store rather than
+    to config/jarvis.json: that file is the user's, and a voice assistant
+    editing a file you also edit by hand is a merge conflict waiting to be
+    discovered at the worst moment.
+    """
+    return memory.remember_alias(name, path, kind=memory.PROJECT)
+
+
+def _alias_for(name: str) -> str | None:
+    """The path an alias names, matched the way a spoken name arrives.
+
+    Exact first, then normalized, so "My Project" finds the alias stored as
+    "my project" — Whisper picks its own capitalisation and the user has no idea
+    which it chose. Using `memory.lookup` for the second pass is also what keeps
+    the use counter honest, which is what `memory.relevant_aliases` sorts on.
+    """
+    known = aliases()
+    if name in known:
+        memory.lookup(name, memory.PROJECT)
+        return known[name]
+    key = _normalize(name)
+    for stored, value in known.items():
+        if _normalize(stored) == key:
+            memory.lookup(stored, memory.PROJECT)
+            return value
+    return None
 
 
 def _is_contained(path: Path, allowed: list[Path]) -> bool:
@@ -126,7 +172,7 @@ def resolve(name: str) -> Path:
             "actions.projects.roots in config/jarvis.json."
         )
 
-    alias_target = aliases().get(name) or aliases().get(name.lower())
+    alias_target = _alias_for(name)
     if alias_target:
         path = Path(alias_target).expanduser().resolve()
         if not path.is_dir():

@@ -1,5 +1,5 @@
 """
-Configuration & API-key resolution — Phases 2-5.
+Configuration & API-key resolution — Phases 2-6.
 
 Everything Jarvis needs to pick a brain lives in one JSON file,
 `config/jarvis.json` (created on first read with the defaults below), so
@@ -31,6 +31,16 @@ a file that only overrides some of them still inherits the rest.
 Phase 4 added a `speech` block (which voice reads the replies out) and an
 `actions.login` block (what the login tool is allowed to do). Phase 5 added a
 `gestures` block (when the camera is on, and how sure a gesture has to be).
+Phase 6 added a `memory` block (jarvis/memory.py — where the SQLite store
+lives, and how much of it reaches a prompt).
+
+Phase 6 also added a **fourth layer**, below the environment: a preference the
+user set *out loud* ("use the Daniel voice from now on") is stored in the
+memory database and applied over the file. It sits below the environment
+deliberately — a variable in a launchd plist is something you configured on
+purpose, and a sentence you said months ago should not quietly beat it. Only
+the paths in PREFERENCE_KEYS can be reached this way; see the comment there for
+why that list is short and closed.
 
 Phase 5 added an **environment layer** on top of that file, so switching brains
 is a one-line edit rather than a JSON surgery: `.env` in the project root (or
@@ -379,6 +389,33 @@ DEFAULTS: dict[str, Any] = {
             "Open_Palm": "cancel",
         },
     },
+    # Phase 6's memory store (jarvis/memory.py). Doc 02: SQLite, long-term
+    # (aliases, preferences) plus a short-term conversation window.
+    "memory": {
+        # false makes Jarvis stateless again — every utterance a fresh
+        # conversation, exactly as Phases 2-5 behaved. Nothing else breaks:
+        # every read degrades to empty and every write to a no-op.
+        "enabled": True,
+        # Relative paths hang off the project root. memory/ is gitignored, and
+        # the file is created 0600 — it holds what you said out loud.
+        "path": "memory/jarvis.db",
+        # How many recent turns go into a prompt. Every one of these is tokens
+        # on the path between you finishing a sentence and hearing an answer,
+        # on a small model where that path *is* the experience. 6 is three
+        # exchanges — enough for the four-turn spoken login of Phase 4, short
+        # enough that a small model doesn't answer the wrong one of them.
+        "history_turns": 6,
+        # ...and how old a turn may be before it's dropped from that window.
+        # 15 minutes, for the reason jarvis.followup and jarvis.confirm each
+        # spend a docstring on: something said an hour ago must not silently
+        # become context for something said now.
+        "history_ttl_seconds": 900,
+        # The cap on how many remembered facts one utterance may pull in.
+        # Retrieval is already selective (only aliases whose names were
+        # actually said), so this is the backstop that keeps a store which has
+        # grown for a year from making Jarvis slower every month.
+        "max_facts": 6,
+    },
 }
 
 # --- the environment layer ---------------------------------------------------
@@ -408,6 +445,10 @@ ENV_OVERRIDES: dict[str, str] = {
     "JARVIS_GESTURES_HOLD_FRAMES": "gestures.hold_frames",
     "JARVIS_GESTURES_MIN_CONFIDENCE": "gestures.min_confidence",
     "JARVIS_GESTURES_ONLY_WHEN_PENDING": "gestures.only_when_pending",
+    "JARVIS_MEMORY_ENABLED": "memory.enabled",
+    "JARVIS_MEMORY_PATH": "memory.path",
+    "JARVIS_MEMORY_HISTORY_TURNS": "memory.history_turns",
+    "JARVIS_MEMORY_HISTORY_TTL": "memory.history_ttl_seconds",
 }
 
 for _name, _entry in DEFAULTS["backends"].items():
@@ -608,39 +649,106 @@ def gestures_config() -> dict[str, Any]:
     return load_config().get("gestures", DEFAULTS["gestures"])
 
 
-def default_backend() -> str:
-    return load_config().get("backend", DEFAULTS["backend"])
+def memory_config() -> dict[str, Any]:
+    """The `memory` block — Phase 6's store (jarvis/memory.py).
 
-
-def save_alias(name: str, path: str | Path) -> bool:
-    """Record `name` -> `path` in config/jarvis.json's actions.projects.aliases.
-
-    Written back into the *user's* file rather than the merged defaults, so
-    nothing they've edited gets flattened by a value they never set. This is how
-    "where is that project?" only ever has to be asked once — the spoken answer
-    becomes a permanent alias.
+    Note what this does *not* do: apply the preference layer. It can't, because
+    jarvis.memory reads this to find its own database, and a preference lives
+    inside that database. This is the one config accessor that has to stay
+    file-and-environment only, and it's why the layering is described as
+    "below the environment" rather than "on top of everything".
     """
-    name = (name or "").strip()
-    if not name:
-        return False
-    try:
-        raw = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.error("Could not read %s to save an alias (%s).", CONFIG_PATH, exc)
-        return False
+    return load_config().get("memory", DEFAULTS["memory"])
 
-    aliases = raw.setdefault("actions", {}).setdefault("projects", {}).setdefault("aliases", {})
-    if aliases.get(name) == str(path):
-        return True
-    aliases[name] = str(path)
+
+# --- the preference layer ----------------------------------------------------
+#
+# Which config paths a *spoken* preference is allowed to change. Everything the
+# user could reasonably want to change by voice, and nothing else.
+#
+# The closed list is the point, and it is a safety boundary rather than
+# tidiness. A preference is set from a transcript, which means it is set by a
+# sentence Whisper reconstructed and a small model interpreted — the same
+# untrusted path every other spoken instruction takes. So it must not be able
+# to reach `actions.claude_code.allow_edits` or `permission_mode`, which decide
+# whether the coding sub-agent may write to your files, or
+# `actions.projects.roots`, which is the containment boundary jarvis/projects.py
+# exists to enforce. Those stay decisions you make in a file, with your hands.
+PREFERENCE_KEYS = frozenset({
+    "backend",
+    "speech.enabled",
+    "speech.backend",
+    "speech.backends.say.voice",
+    "speech.backends.say.rate",
+    "speech.backends.piper.model",
+    "speech.backends.openai.voice",
+})
+
+
+def _with_preferences(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Overlay the user's spoken preferences onto an already-merged config.
+
+    Imported lazily: jarvis.memory imports this module, so a module-level
+    import would be a cycle. Any failure to read preferences leaves `cfg`
+    exactly as it was — memory being unavailable degrades Jarvis to its Phase 5
+    behaviour rather than breaking it (jarvis/memory.py's fourth rule).
+    """
     try:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(raw, indent=2) + "\n")
-    except OSError as exc:
-        logger.error("Could not save the alias for %r (%s).", name, exc)
-        return False
-    logger.info("learned that %r means %s", name, path)
-    return True
+        from jarvis import memory
+    except ImportError:  # pragma: no cover - only if the module is missing
+        return cfg
+
+    stored = memory.preferences()
+    if not stored:
+        return cfg
+
+    result = dict(cfg)
+    for key, value in stored.items():
+        if key not in PREFERENCE_KEYS:
+            continue
+        # An environment variable is a deliberate act of configuration; a
+        # sentence said months ago is not. The environment wins.
+        env_var = next((var for var, path in ENV_OVERRIDES.items() if path == key), None)
+        if env_var and os.environ.get(env_var):
+            continue
+        _set_path(result, key, _coerce(value))
+    return result
+
+
+def speech_config() -> dict[str, Any]:
+    """The `speech` block — which voice speaks Jarvis's replies (jarvis/speech.py).
+
+    Read on every call, like actions_config: switching voice or muting Jarvis
+    should take effect on the next reply, not the next restart. Phase 6 layers
+    a spoken preference over it, which is what makes "use the Daniel voice from
+    now on" outlive the session it was said in.
+    """
+    merged = _with_preferences(load_config())
+    return merged.get("speech", DEFAULTS["speech"])
+
+
+def default_backend(task_type: str = "") -> str:
+    """Which brain answers. A spoken preference beats the file; a plist beats both.
+
+    `task_type` is doc 01's "preferred model backend per task type" — a
+    preference stored as `backend_for.<task>` (jarvis.memory.backend_for). It is
+    honoured here so the store and the router agree on what it means, but
+    **nothing classifies a task type yet**: routing a request to a *kind* is
+    Phase 7's job (doc 01, multi-agent orchestration), and inventing a
+    classifier here would be doing Phase 7's work with none of its design. Until
+    then this argument is only ever passed explicitly, by a script comparing
+    backends.
+    """
+    if task_type:
+        try:
+            from jarvis import memory
+
+            chosen = memory.backend_for(task_type)
+        except ImportError:  # pragma: no cover
+            chosen = None
+        if chosen:
+            return chosen
+    return _with_preferences(load_config()).get("backend", DEFAULTS["backend"])
 
 
 def api_key(backend: str) -> str | None:
