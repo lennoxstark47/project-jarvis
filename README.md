@@ -30,7 +30,14 @@ Phases 0-3 are built and running: a menu-bar background app with mic/camera acce
 push-to-talk voice capture with local Whisper transcription, a model-agnostic brain
 that turns a transcript into a tool call, and an action layer that opens apps and
 URLs, drives its own browser, and hands coding tasks to Claude Code as a sub-agent.
-Voice out and credentialed login are next (Phase 4).
+
+Phase 4 is built: Jarvis speaks its replies, and a username/password said out loud
+is lifted out of the transcript locally, typed into a real login form in *your* own
+Firefox, and saved to the macOS Keychain once the site accepts it — with the model
+never seeing the characters and nothing submitting the form until you say so. One
+item is carried forward: the four-turn spoken login has never completed start to
+finish from the microphone, blocked by the loop having no memory between utterances
+(Phase 6). See the tracker. Phase 5 (hand gestures) is next.
 
 `docs/00-IMPLEMENTATION_TRACKER.md` is the authoritative, per-task version of this
 — including what's been proven live versus only written.

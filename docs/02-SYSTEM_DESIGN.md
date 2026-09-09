@@ -110,6 +110,20 @@ phase explicitly adds a tool:
   of what Claude Code already does.
 - Browser automation (`open_portal`, `fill_login_form`) — Playwright, chosen over
   raw Selenium for a much simpler API and built-in waiting/retry behavior.
+  - **Revised 2026-09-08 (Phase 4):** both, behind one interface, chosen by
+    `actions.browser.engine`. Playwright's Firefox is a *patched* build speaking
+    a protocol (Juggler) that stock Firefox doesn't implement, so Playwright
+    cannot drive the Firefox you have installed — verified by pointing it at
+    `/Applications/Firefox Developer Edition.app`, which fails to launch. Since
+    "use my own browser, with my own logins" is a real requirement and not a
+    preference, the default engine is now `system-firefox`: the installed
+    Firefox, your own profile, driven through **geckodriver** (Mozilla's driver,
+    the supported way to automate stock Firefox). Playwright's browsers remain
+    available as engines and keep their simpler API where it's enough.
+  - The hard limit, true of every option: a driver has to *launch* the browser.
+    Nothing can attach to the Firefox window already open on screen short of a
+    browser extension, and a profile can only be open in one process — so Jarvis
+    asks you to quit Firefox rather than failing obscurely.
 - Gesture-mapped meta-actions (`confirm`, `cancel`) — Phase 5, reuse the same tool
   contract voice already established.
 

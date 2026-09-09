@@ -8,8 +8,10 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus:** Phase 3 is ✅ Done. Ready to start Phase 4 — voice out + credentialed
-login.
+**Current focus:** Phase 5 — hand gestures. Phase 4 is ✅ Done apart from one carried-forward
+item: the four-turn spoken login has never completed *from the microphone*, blocked by
+conversation memory (Phase 6), not by anything in Phase 4. See Phase 4's "Where Phase 4
+actually stands" note before re-testing it.
 
 **Status legend:** ☐ not started · 🔶 in progress · ✅ done · 🚫 blocked
 
@@ -861,17 +863,390 @@ returns None rather than a best guess whenever the words don't match something r
 ---
 
 ## Phase 4 — Voice out + credentialed login
-Status: ☐ Not started
+Status: ✅ Done — except the spoken end-to-end run, carried forward (see the last note)
 
-- ☐ TTS wired up (local: Piper / `say` / `AVSpeechSynthesizer`)
-- ☐ `credential_capture` mode in intent parser (local-only handling, per doc 04)
-- ☐ `redact_secrets()` log filter applied globally
-- ☐ Keychain-backed vault module (`get(site)`, `set(site, cred)`)
-- ☐ `fill_login_form` tool (fills, waits for spoken confirmation before submit)
-- **Definition of done:** spoken login on a real test site works, credential never hits a log file
+- ✅ TTS wired up (local: Piper / `say` / `AVSpeechSynthesizer`) — `src/jarvis/speech.py`,
+  three backends behind one interface (`say` default, `piper`, `openai`), **proven live**
+  for `say`; every reply from the menu bar app is now spoken
+- ✅ `credential_capture` mode in intent parser (local-only handling, per doc 04) —
+  `src/jarvis/credentials.py`, runs in `agent.handle()` *before* the model call
+- ✅ `redact_secrets()` log filter applied globally — `src/jarvis/redact.py`, installed on
+  the log handlers in `main.py` (and in the harness scripts)
+- ✅ Keychain-backed vault module (`get(site)`, `set(site, cred)`) — `src/jarvis/vault.py`,
+  **proven live** against the real macOS Keychain
+- ✅ `fill_login_form` tool (fills, waits for spoken confirmation before submit) —
+  `src/jarvis/login.py` + `src/jarvis/browser.py`, **proven live**: filled and submitted a
+  real login page, with the confirmation step in between
+- ☐ **Definition of done:** spoken login on a real test site works, credential never hits a
+  log file — the login half is proven live end to end (below); the *spoken* half is what's
+  left, and needs you at the microphone
 
-Notes:
-- _(none yet)_
+Notes (2026-09-08):
+- **What was built:**
+  - `src/jarvis/speech.py` — the output layer, same swappable-backend shape as
+    `jarvis.router`: `say` (macOS built-in, the default — free, offline, no setup), `piper`
+    (local neural voice, needs `pip install piper-tts` plus a downloaded `.onnx` model) and
+    `openai` (cloud, per-utterance cost). A new reply *interrupts* whatever is mid-sentence
+    rather than queueing behind it, so talking over Jarvis works the way it does with a
+    person. Failures are logged and swallowed — a voice assistant that can't speak is
+    degraded, one that crashes because a voice model is missing is broken.
+  - `src/jarvis/credentials.py` — doc 04's point 2, and the one piece of that document
+    worth building carefully. A local regex lifts "username is X, password is Y" out of the
+    transcript *before* the model call and replaces it with a reference, so the brain (which
+    may be Claude or GPT, over the network) routes the request without ever learning the
+    characters. Includes the spelling-out decoder: NATO alphabet, digits as words, symbol
+    names ("dash", "at", "bang"), and case markers ("capital delta", "lowercase echo").
+  - `src/jarvis/vault.py` — the Credential Vault box from doc 02, ~140 lines over the macOS
+    Keychain via `keyring`, no crypto of its own. Keyed by site *as you say it*, normalised
+    so "the billing portal", "billing portal login" and "the billing portal website" all hit
+    one entry.
+  - `src/jarvis/redact.py` — two overlapping defences: exact redaction of registered secret
+    values (anything captured, from any module), plus a pattern for "password is ..." that
+    covers the window before the parser has run. Applied as a `logging.Filter` on the
+    *handlers*, which is what makes it global rather than remembered per call site.
+  - `src/jarvis/confirm.py` — one armed action, a description, and a yes/no that runs or
+    drops it, with a TTL and single-use semantics (same two safety properties as
+    `jarvis.followup`). Not in the original plan as a separate module; see the deviation
+    note below.
+  - `src/jarvis/login.py` — the policy half: resolve the ref locally, fall back to the
+    Keychain, fill, save, arm the confirmation, and (only from a confirmed action) submit.
+  - `scripts/selftest_login.py` (offline, fake browser + fake Keychain) and
+    `scripts/try_login.py` (live: `--speak`, `--dictate`, `--keychain`, `--for-real`).
+- **What's proven live, and how:** against `https://the-internet.herokuapp.com/login` (a
+  public practice login page that publishes its own test credentials), the full chain ran:
+  `open_portal` → local capture → `fill_login_form` → *stop and ask* → confirm → submit →
+  landed on `/secure`, with the credential saved to and then deleted from the real Keychain.
+  The model half is proven separately: with `--backend nvidia`, `gpt-oss-20b` answered the
+  dictated sentence with `fill_login_form(site='practice portal',
+  credential_ref='pending_dictation_1')` — the right tool, the ref, and no credential
+  anywhere in what crossed the network.
+- **Nothing submits without a person.** There is deliberately no `submit_login` tool. The
+  model can fill a form; only `confirm.resolve(True)` presses the button, and that is
+  reached from a yes/no matched locally against a fixed word list, with no model call at
+  all. Side effect worth keeping: "no, cancel that" works even when the brain is
+  unreachable — the stop button doesn't depend on the network.
+- **`say` latency is worth one config line.** Synthesising the reply "Filled in, want me to
+  submit?" (2.0s of audio) measured: system default 4.8s, Samantha 2.3s, Alex 2.0s, Daniel
+  1.9s, Karen 1.8s, Fred 1.4s. That cost lands squarely in the pause after you stop talking,
+  so naming a voice in `speech.backends.say.voice` roughly halves how long Jarvis takes to
+  answer. Left as `null` (system voice) by default rather than guessing at your taste; a
+  name that isn't installed falls back to the system voice rather than to silence.
+- **Bug found & fixed: the redaction pattern was eating whole log lines.** With the
+  connective optional, `password\s*(?:is|was)?\s*.*` matched *any* mention of the word —
+  a Playwright error reading "there's no password field on <url>" came back as "there's no
+  password [credential omitted]", i.e. a log line destroyed to protect nothing. The
+  connective is now required; registered values are what catch a real secret in an odd
+  phrasing. Same fix in the capture regex, so "the password field isn't showing up" is no
+  longer read as a dictation whose password is the word "field".
+- **Bug found & fixed: a model that drops the ref.** `gpt-oss-20b` passed the
+  `credential_ref` correctly, but a scripted test of the case where a model calls
+  `fill_login_form(site=...)` with no ref showed Jarvis asking you to dictate a password you
+  had dictated four seconds earlier. `credentials.latest()` now supplies the most recent
+  live capture when no usable ref arrives. Nothing about the security story changes — the
+  value is on this machine either way.
+- **The username is deliberately *not* redacted.** It was, briefly, and it made the logs
+  worse for nothing: it isn't the secret, it's the most useful thing in a line about a
+  login, and a username like "admin" or "mail" occurs all over a log and half the file
+  paths. It's still stripped from the transcript (doc 04 redacts the whole dictation
+  clause) and still never reaches a model.
+- **2FA stops the flow, per doc 04's point 6.** After submitting, a one-time-code field on
+  the page makes Jarvis say a code is needed and hand it back to you, rather than claiming
+  it logged in.
+- **Deviation from `01-PHASE_PLAN.md`:** the plan describes the confirmation as a property
+  of `fill_login_form` ("then pauses for you to confirm/submit"). It's built as its own
+  module (`jarvis/confirm.py`) holding a *callable*, because that's both the smallest way to
+  do it and the seam Phase 5 needs: a thumbs-up is `confirm.resolve(True)` and needs to know
+  nothing about logins. Doc 02 already promised gesture-mapped `confirm`/`cancel` reusing
+  the voice contract; this is that contract, arriving one phase early because Phase 4 needed
+  it anyway. `01-PHASE_PLAN.md` Phase 5 updated to say so.
+- **Environment notes from this session:** the Ollama host in `config/jarvis.json`
+  (`192.168.1.110`) was unreachable, so the configured default backend timed out — the
+  model-path checks were run with `--backend nvidia` instead (83-130s per call on the free
+  tier that day, versus the 2.7-3.7s measured in Phase 2; the tool calls were correct both
+  times). Nothing in Phase 4 depends on which backend answers.
+### Second round, same day — what the first live voice session broke
+
+You ran it through the microphone and almost nothing worked end to end. The log was worth
+more than the feature: five separate defects, four of them mine, and every one of them
+invisible to the offline self-test because it took a real model, a real browser window and
+a real person talking to produce them.
+
+1. **The model opened the page in the wrong browser.** "Open the practice portal at ..."
+   went to `open_url` — macOS's default browser, which Jarvis cannot see — so
+   `fill_login_form` was typing into a Chromium that was still on `about:blank`, and said
+   so in a way ("is this the login page?") that sent the model hunting for a URL instead of
+   for the right *tool*. Fixed in three places: `open_url` now says outright that a page
+   opened with it is one Jarvis can't type into and that logins start with `open_portal`;
+   `open_portal` says logins start there; and the fill failure now names the fix ("call
+   open_portal with the login page's full URL first, then call fill_login_form again").
+2. **A closed browser window wedged Jarvis until restart.** Chromium opened on
+   `about:blank`, you closed it — entirely reasonably — and every browser command for the
+   rest of the session failed with "Target page, context or browser has been closed".
+   `ensure_started` only checked that the worker *thread* was alive, which it was. Added
+   `BrowserSession._ensure_page`, run before every queued command: a closed page gets a new
+   one, a closed window gets a relaunch. Verified live for both.
+3. **Saying the username and the password in two breaths lost the username.** doc 04's
+   example says both in one sentence; nobody does. "Login, username is lennoxstark47" was
+   parsed, found no password, and was discarded whole — then the password arrived with
+   nobody to go with it. `jarvis.credentials` is now the *mode* the task list always called
+   it: it holds half a credential, says which half is missing, and `expect()` arms it to
+   read the next utterance as that half even when it arrives bare ("it's
+   L-E-N-N-O-X-S-T-A-R-K-47") with no "username is" to key on. Guarded by a TTL, single use,
+   and a command-word check so "open github and log in" is still a command. A password with
+   no username is no longer typed in at all — Jarvis asks for the username instead, because
+   half a filled form is just a page that doesn't submit.
+4. **The model called a page it had just opened "the billing portal"** — copied out of the
+   tool description's own example — so the credential would have been filed in the Keychain
+   under a name you never said and could never look up. Saved logins are now keyed on the
+   **host of the page Jarvis actually typed into**, which is a fact rather than a guess;
+   lookup tries that first and the spoken name second. Proven live: a second visit logs in
+   from the Keychain with no dictation, while the model is still calling it the billing
+   portal. The model's name for a site is now used only in what Jarvis says back.
+5. **Four steps wasn't enough to recover.** "Open X and log in" spends a step opening, one
+   discovering the wrong browser, one re-opening, one filling — leaving nothing for the
+   sentence saying what happened, so a login that worked was reported as "I got stuck
+   partway". `MAX_STEPS` 4 → 6.
+
+Also fixed from that session: a `credential_ref` passed in the `site` argument (and, once,
+the literal redaction placeholder) is now recognised rather than saved as a site name; a
+spelled-out *username* decodes to lower case, which is what a login field wants; and
+`speech.speak` logs what it said and how long it took, because a silent failure and a
+working reply were indistinguishable in the log.
+
+**Now proven live, four turns through the real local model** (`granite4.1:3b` on the LAN
+Ollama box), replaying the exact shape of your failed session:
+
+    "Open the portal at the-internet.herokuapp.com/login."   -> open_portal, login form found
+    "Log in, username is tomsmith."                          -> "Please say your password."
+    "The password is SuperSecretPassword bang."              -> filled, "want me to submit?"
+    "Yes."                                                   -> submitted, landed on /secure
+
+...and again on a second visit with no dictation at all, from the Keychain.
+
+**One thing that is not fixed, because it isn't Phase 4's to fix:** spoken URLs. "the
+internet dot herokuapp dot com slash login" came back from the model as
+`https://login.herokuapp.com` — it mangles a domain it has to assemble from dictation, and
+Whisper had already turned "herokuapp" into "herocap" once. Saying a URL out loud is a bad
+interface; the fix is Phase 6's aliases ("the practice portal" -> a URL Jarvis already
+knows), and `open_portal` now at least says out loud when it lands somewhere with no login
+form on it, so a wrong page is noticed immediately instead of three steps later.
+
+### Third round — "it should be easier" (the GitHub attempt)
+
+Your second live session was one sentence — *"open GitHub.com and go to login in the Firefox
+browser"* — and it produced two browser windows, neither of them Firefox, and then silence.
+What you actually wanted was stated plainly enough to build to: open the page **in Firefox**,
+land on the login form, and then **ask me for my username and password**. Four changes:
+
+- **Jarvis now leads the login conversation.** `open_portal` landing on a page with a
+  password field no longer just reports it. If there's a saved login for that host it says
+  so and tells the model to fill it straight away; if there isn't, it tells the model to ask
+  you out loud — *and arms the local parser* (`credentials.expect("both")`), so your answer
+  is understood whether you say "username is tomsmith" or just "tomsmith". Live, turn one now
+  ends with Jarvis saying "please tell me your username", which is the flow you described.
+- **Firefox.** `playwright install firefox` done, `actions.browser.engine` switched to
+  `firefox`, verified against `github.com/login` and the practice site. **What this is not:**
+  your own Firefox, with your sessions and extensions. Playwright drives its own Firefox
+  build with its own profile, and it cannot attach to a normal running Firefox — no
+  automation tool can, Firefox has no equivalent of Chrome's remote-debugging attach. So
+  this is a Firefox-shaped window that is not the one in your Dock. Set the engine back to
+  `chromium` if that trade isn't worth it.
+- **Profiles are now per-engine** (`memory/browser/<engine>`). A Chromium profile directory
+  is not a Firefox one, and pointing one at the other either fails or corrupts it.
+- **Both `fill_login_form` arguments are optional now.** A required `site` cost a whole step
+  live — the model had the ref, had no name for the site, and burned a turn on "missing 1
+  required positional argument" before inventing `example.com` to get past it. Jarvis keys
+  on the page it types into, so it needs neither argument.
+
+**Bug found in your Keychain, not in a test.** Checking whether a GitHub login was doable
+turned up a real saved entry for `github.com` with the username **`lenoxstark47`** — one
+letter short of yours, straight from a Whisper mis-hearing. It was saved at *fill* time,
+before anyone knew whether the login worked, so a mis-transcription became a permanent entry
+that would be silently reused on every later visit. Fixed: a dictated credential is now
+saved only after the site has **accepted** it (navigated away, or asked for a 2FA code —
+which means the password got through). A rejected login saves nothing and re-arms the parser
+so you can just say it again. Delete the bad entry with:
+
+    .venv/bin/python3 scripts/try_login.py --keychain github.com --forget
+
+**On model strength.** The local `granite4.1:3b` is not the bottleneck it looked like. Every
+failure in both live sessions had a cause in Jarvis's own code — a wrong tool description, a
+required argument, a wedged browser, a parser that threw away half a credential — and each
+one is fixed in the model-agnostic layer, where it helps every backend. Worth knowing before
+switching: `meta/muse-glimmer-30b` *is* reachable with your NVIDIA key (81 models are; list
+them with `GET {base_url}/models`), but the free tier measured **84-130s per call** on
+2026-09-08, against 0.5-1s for the local model. That's the difference between a voice
+assistant and a form you submit. A/B any of them without touching config:
+
+    .venv/bin/python3 scripts/try_login.py --backend nvidia --model meta/muse-glimmer-30b
+
+### Fourth round — your Firefox, not a browser Jarvis brought with it
+
+You were clear twice, and the second time the reason landed: *"I have Firefox installed in
+my system. I want the AI to use that Firefox."* Round three had switched to Playwright's
+Firefox, which is a different browser that happens to share a name — none of your logins,
+none of your extensions, not the window in your Dock.
+
+**The blocking fact, verified rather than assumed:** Playwright *cannot* drive your Firefox.
+Its Firefox is a patched build speaking the Juggler protocol; stock Firefox doesn't implement
+it. Pointing `executable_path` at `/Applications/Firefox Developer Edition.app` fails to
+launch, and `channel="firefox"` silently uses Playwright's own bundled copy instead. So "my
+browser" and "Playwright" were mutually exclusive, and the fix was a second engine, not a
+setting.
+
+- `jarvis/browser.py` is now a base class holding all the thread/queue/recovery plumbing,
+  with two engines under it exposing an identical four-action contract, so nothing above it
+  changed: **`SystemFirefoxSession`** (your Firefox, via geckodriver — Mozilla's own driver
+  and the supported way to automate a stock build) and **`PlaywrightSession`** (the previous
+  behaviour, still there).
+- `actions.browser.engine` is now `system-firefox` by default, with `binary` (null =
+  find Firefox in /Applications, Developer Edition included) and `profile` (null = whichever
+  profile Firefox itself opens — read out of `profiles.ini`, honouring the `[InstallXXXX]`
+  section, which is what Developer Edition actually uses).
+- **Selenium fetches geckodriver itself** (Selenium Manager), so there is nothing to
+  `brew install`. `selenium>=4.20` added to requirements.
+- **Profile locking is checked precisely**, by trying to take Firefox's own `fcntl` lock on
+  `.parentlock` — not by asking "is any Firefox running". The difference matters: a second
+  Firefox on a *different* profile is fine, and the coarse check would have stopped Jarvis
+  working whenever your browser was open at all. When the profile really is in use, Jarvis
+  says so in a sentence it can speak: *"your Firefox is already open with that profile ...
+  quit Firefox and ask me again."*
+- Doc 02's "Playwright, chosen over raw Selenium" is a locked decision, so it's been revised
+  there rather than quietly contradicted here.
+
+**Proven live:** geckodriver launched Firefox Developer Edition, navigated to
+`github.com/login`, and found and filled both fields (dummy values, nothing submitted). Then
+the whole four-turn login ran through the real Firefox on the practice site, with the local
+3B model, ending logged in with the credential saved.
+
+### The URL problem, finally fixed — locally, not by a bigger model
+
+Three separate live runs, three mangled URLs from the model: `the-internet.herokuapp.com/login`
+came back as `login.herokuapp.com`, then `the-intent-internet.herokuapp.com`. Whisper had
+transcribed it *correctly* every time — the model corrupted a string it could see.
+
+So `tools.prefer_spoken_url` applies the rule the rest of Jarvis already runs on: **anything
+the user said themselves is resolved locally rather than round-tripped through a model.** A
+URL spoken out loud (including "github dot com slash login", folded back into punctuation)
+overrules the model's version when they disagree; when the user only named a site ("open
+GitHub"), the model still supplies the URL, and when the two agree the model keeps its path.
+Two spoken URLs in one sentence is ambiguous, so it defers rather than guessing. Live, this
+immediately rescued a run: the model asked for `the-intent-internet.herokuapp.com` and Jarvis
+opened `the-internet.herokuapp.com`.
+
+The limit worth knowing: a hyphen that was never spoken can't be recovered — "the internet
+dot herokuapp dot com" is genuinely ambiguous between "theinternet." and "the-internet.".
+Say "dash", or let Phase 6's aliases remember the whole URL.
+
+**On "we should use perfect models":** the timing run finished — `meta/muse-glimmer-30b` took
+**262.7s** for one command and invented the URL `https://practiceportal.com`. That's the
+larger model doing *worse* on the exact thing that kept failing, 400x slower. Every defect in
+all four rounds had its cause in Jarvis's own code, and fixing them in the model-agnostic
+layer is what made a 3B model on a LAN box run the whole flow correctly. Decision this round:
+stay local.
+
+### Fifth round — the first real voice attempt, and what it taught
+
+Firefox quit, four turns spoken into the microphone. It did not log in, and the log is worth
+keeping because three of the four failures were mine and one is a lesson about the interface
+itself.
+
+**What worked:** your Firefox launched with your own profile from a spoken command; the
+URL-correction fired and logged what it did; Whisper, the agent, the browser and the voice
+all ran the loop without a crash.
+
+**Fixed, from that log:**
+
+1. **The word "dash" survived into the domain.** Told to say "the dash internet", Whisper
+   wrote `the dash-internet.herokuapp.com` — the word stayed *and* became punctuation, so
+   the extractor read the host as `dash-internet.herokuapp.com`. The spoken-punctuation rule
+   now swallows an adjacent hyphen, and that same transcript yields
+   `the-internet.herokuapp.com`.
+2. **The URL correction made one case *worse*, which is the failure that matters most.**
+   Whisper split "herokuapp" into "heroku app"; the extractor read `the-internet.heroku` as a
+   domain and overruled the model with it. A correction that can't tell a domain from a
+   fragment has no business overruling anything, so a host must now end in a real TLD — any
+   two-letter country code, or a list of the gTLDs people say out loud. `.heroku` isn't one,
+   so Jarvis defers to the model instead of confidently breaking it.
+3. **A DNS failure was 900 characters of Selenium stack trace** — passed to the model, come
+   back paraphrased, and then *read out loud* for seventeen seconds. Driver errors are now
+   translated where they happen: "there's no site at portal.example.com — that address
+   doesn't exist". Everything Jarvis says has to survive being spoken.
+
+**The lesson, which no amount of code fixes:** `the-internet.herokuapp.com` is not a
+speakable domain. Whisper split it three different ways across four attempts, and every
+repair pass is guessing at a hyphen that was never in the audio. That is a bad test target,
+and it was my choice, not a fault in the phase. GitHub's domain is one word Whisper already
+knows (it's in `stt.INITIAL_PROMPT`), which is why the next attempt uses it — and it's the
+site you wanted to log into in the first place.
+
+Also seen, not yet fixed: turn 2 ("the correct URL is ...") went to `open_url` rather than
+`open_portal`, because each utterance is a fresh conversation and nothing tells the model a
+login is in progress. Worth watching; conversation memory is Phase 6, and forcing it earlier
+would mean building Phase 6's memory store inside Phase 4.
+
+### Sixth round — the GitHub attempt, and Jarvis deadlocking itself
+
+Spoken into the microphone against GitHub. Most of the phase worked, on the first try:
+
+- *"Open github dot com slash login"* — transcribed correctly, page opened.
+- *"My username is LenoxStar47"* — captured locally, and Jarvis asked out loud for the
+  password. The two-utterance credential flow, which round two built, did its job.
+- The password turn appears in `logs/jarvis.log` as **`transcript: The password [credential
+  omitted]`**. That is doc 04's whole point, working, on a real password.
+- `fill_login_form(credential_ref='pending_dictation_1')` — right tool, right ref, no
+  credential anywhere in what crossed the network.
+
+Then it failed, and the cause was mine: **turn one's `open_url` handed the URL to macOS,
+which launched the user's Firefox, which took the profile lock — so two turns later
+geckodriver could not drive the browser the page was sitting in.** Jarvis deadlocked itself.
+
+The flaw was introduced by making `system-firefox` the engine and not following it through.
+`open_url` ("a page to read") and `open_portal` ("a page to act on") were two different
+browsers under Playwright, and that distinction is what the model has to get right. With one
+real browser there is only one browser, so `open_url` now goes through the driven session
+too, and the model's choice between the two tools stops being able to break anything. If the
+driven browser can't be had — usually because Firefox is already open — it falls back to
+macOS `open`, which lands the page in that same window, the best available outcome for
+something you only want to read.
+
+Also fixed: the profile-lock message was 272 characters and took **19 seconds** to speak. The
+spoken half is now one short sentence; the part about `actions.browser.profile` went to the
+log, where length costs nothing.
+
+### Where Phase 4 actually stands
+
+Every task in the list is built and proven. The Definition of done has two halves, and they
+are in different states:
+
+- **"credential never hits a log file"** — proven, on a real password, through the
+  microphone. This was the half worth building carefully and it is done.
+- **"spoken login on a real test site works"** — the full chain has run end to end
+  repeatedly (open → capture → fill → confirm → submit → logged in, credential saved to the
+  Keychain only after the site accepted it), in the real Firefox, driven by the local 3B
+  model. What has never completed is that same run *starting* from the microphone, and every
+  failure has been in one place: the model choosing a tool, or Whisper hearing a domain.
+
+Neither of those is a Phase 4 problem any more:
+
+- Tool choice going wrong across turns is a **conversation memory** gap — each utterance is a
+  fresh conversation, so nothing tells the model a login is already in progress. That is
+  Phase 6, and forcing it earlier means building Phase 6's memory store inside Phase 4.
+- Saying a URL out loud is a bad interface, and the fix is the same **alias** work in Phase 6
+  ("the practice portal" → a URL Jarvis already knows).
+
+**Decision (2026-09-08):** carry the spoken-login verification forward rather than hold the
+phase open for it. Phase 5's gestures land on `confirm.resolve()`, which is proven and does
+not depend on it. Re-run the four turns whenever Phase 6 gives the loop memory, and tick the
+box then. `.venv/bin/python3 run.py`, hold F9 for each:
+  1. *"Open the portal at the-internet.herokuapp.com/login"* — say the URL slowly, or add it
+     to `actions.projects.aliases`-style config later; if Whisper mangles it, open the page
+     with `scripts/try_login.py --portal ... --for-real` and start from turn 2.
+  2. *"Log in, username is tomsmith"* → Jarvis should ask for the password out loud.
+  3. *"The password is SuperSecretPassword bang"* → it fills both fields and asks to submit.
+  4. *"Yes"* → it submits and says where it landed.
+  Then check `grep -i "SuperSecret\|password is" logs/jarvis.log` finds nothing. When that
+  passes, flip this phase to ✅ Done and move Current focus to Phase 5.
 
 ---
 

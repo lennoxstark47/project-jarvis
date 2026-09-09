@@ -1,5 +1,5 @@
 """
-The agent loop — Phases 2-3.
+The agent loop — Phases 2-4.
 
 This is "the brain": transcript in, decision out. Strip the hype and an agent
 is a loop (docs/03-AGENTS_AND_MODELS.md) — send the user's words plus the tool
@@ -29,6 +29,21 @@ project is (jarvis.followup), this turn gets one chance to be the answer. That
 is resolved **locally** — no model call at all — because a filesystem path is
 not something to round-trip through a small model, and because the answer is
 worth acting on the instant it's understood. See `_seed_from_followup`.
+
+Phase 4 adds two more things that happen *before* the model is asked anything,
+both for reasons that outrank the loop's own tidiness:
+
+- **A yes or a no** answers whatever Jarvis last asked permission for
+  (jarvis.confirm) — in this phase, submitting a login form. Resolved locally,
+  from a fixed word list. The thing being confirmed is the one action that types
+  a password into a page; deciding that on this machine is strictly better than
+  sending it out to be adjudicated, and it means a confirmation still works when
+  the network or the API key doesn't.
+- **A dictated credential** is lifted out of the transcript locally
+  (jarvis.credentials) and replaced with a reference before anything is sent
+  anywhere. This is doc 04's point 2, and it is the whole reason a cloud brain
+  can be used for a spoken login at all: the model routes the request, and never
+  learns the characters.
 """
 from __future__ import annotations
 
@@ -36,7 +51,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
-from jarvis import config, followup, projects
+from jarvis import config, confirm, credentials, followup, projects
 from jarvis import tools as tool_layer
 from jarvis.router import Backend, BackendError, Message, ToolCall, get_backend
 
@@ -48,7 +63,14 @@ logger = logging.getLogger("jarvis.agent")
 # model call plus the tools it asked for, so this caps both cost and the worst
 # case where a model gets stuck re-calling the same tool forever. A normal
 # command finishes in two (call the tool, then say what happened).
-MAX_STEPS = 4
+#
+# Raised from 4 to 6 on 2026-09-08. Phase 4 introduced the first request that
+# legitimately needs a *recovery* step: "open X and log in" spends one step
+# opening the page, one discovering Jarvis's own browser isn't on it, one
+# re-opening it in the driveable browser, and one filling the form — which left
+# nothing for the sentence saying what happened, so a login that had actually
+# worked was reported as "I got stuck partway".
+MAX_STEPS = 6
 
 # The "say only what the tool said" paragraph is not boilerplate. Phase 3's
 # first live sub-agent run timed out mid-investigation, and the small model,
@@ -75,6 +97,15 @@ finding it is Jarvis's job, and it will ask the user if it has to.
 When you report what a tool returned, say only what it actually said. Never \
 invent a finding, a cause, a file name, or a line of code that isn't in the \
 tool's result — if the tool didn't reach a conclusion, say that it didn't.
+
+Some things the user says are handled before you see them: a credential they \
+dictate is captured locally and replaced with a reference. When a message says \
+a credential is held under a credential_ref, pass that reference to the tool \
+exactly as written — you cannot see the password, you do not need it, and you \
+must never ask the user to repeat it.
+
+When a tool result tells you to say a particular sentence and stop, say that \
+sentence and stop.
 
 Your replies are read out loud, so keep them to one short sentence. No lists, \
 no markdown, no URLs read out character by character."""
@@ -198,11 +229,53 @@ class Agent:
             Message(role="tool", content=output, tool_call_id=call.id, name=call.name),
         ]
 
+    def _answer_pending_confirmation(self, transcript: str) -> AgentResult | None:
+        """If Jarvis asked permission last turn and this is the answer, act on it.
+
+        Returns a finished result (nothing else should happen this turn) or None
+        if this utterance wasn't an answer. Deliberately runs before the backend
+        is built: "no, cancel that" must work even when the brain is unreachable.
+        """
+        pending = confirm.peek()
+        if pending is None:
+            return None
+        answer = confirm.classify(transcript)
+        if answer is None:
+            # Not an answer — treat it as a normal command and leave the
+            # question armed for its TTL, same as jarvis.followup does.
+            return None
+
+        self._status("Confirming..." if answer else "Cancelling...")
+        spoken = confirm.resolve(answer)
+        if spoken is None:  # expired between peek and resolve
+            return None
+
+        result = AgentResult(reply=spoken)
+        call = ToolCall(
+            id="confirm-0", name="confirm", arguments={"answer": "yes" if answer else "no"}
+        )
+        result.actions.append((call, spoken))
+        logger.info("resolved locally: %s -> %s", pending.description, spoken)
+        return result
+
     def handle(self, transcript: str) -> AgentResult:
         """Run one utterance through the loop. Never raises."""
         transcript = (transcript or "").strip()
         if not transcript:
             return AgentResult(reply="", error="empty transcript")
+
+        confirmed = self._answer_pending_confirmation(transcript)
+        if confirmed is not None:
+            return confirmed
+
+        # Everything from here on may be sent to a cloud model, so this is the
+        # last moment at which a dictated password can be taken out of it. Doing
+        # it here rather than in each backend means it holds for every backend,
+        # including ones added later (doc 04, point 2).
+        spoken = transcript
+        captured = credentials.capture(transcript)
+        if captured is not None:
+            transcript = captured.redacted
 
         try:
             backend = self.backend
@@ -259,6 +332,12 @@ class Agent:
                     call.arguments,
                     dry_run=self.dry_run,
                     on_status=self.on_status,
+                    # What the user actually said, so a URL they spelled out
+                    # beats the model's recollection of it — see
+                    # tools.prefer_spoken_url. The *original* transcript, not the
+                    # redacted one: a credential is never a URL, and the redacted
+                    # form has Jarvis's own instructions appended to it.
+                    transcript=spoken,
                 )
                 result.actions.append((call, output))
                 messages.append(

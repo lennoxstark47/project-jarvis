@@ -35,7 +35,9 @@
       "extra_args": []
     },
     "browser": {
-      "engine": "chromium",
+      "engine": "system-firefox",
+      "binary": null,
+      "profile": null,
       "headless": false,
       "timeout": 30,
       "user_data_dir": "memory/browser"
@@ -50,6 +52,31 @@
       ],
       "aliases": {
         "my thesis notes": "/Users/lennoxstark47/Desktop/project_jarvis/docs"
+      }
+    },
+    "login": {
+      "remember": true,
+      "confirm_before_submit": true,
+      "submit_wait": 8
+    }
+  },
+  "speech": {
+    "enabled": true,
+    "backend": "say",
+    "backends": {
+      "say": {
+        "voice": null,
+        "rate": null
+      },
+      "piper": {
+        "binary": "piper",
+        "model": null,
+        "length_scale": null
+      },
+      "openai": {
+        "model": "gpt-4o-mini-tts",
+        "voice": "alloy",
+        "timeout": 30
       }
     }
   }

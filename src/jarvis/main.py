@@ -22,6 +22,14 @@ on_status callback. That's doc 02's "listening / thinking / speaking / running a
 sub-agent" surface, and the reason a long sub-agent call doesn't look like a
 hang.
 
+Phase 4 makes the conversation two-way: every reply is also spoken out loud
+(jarvis.speech), which is the "speaking" state that status line always had a
+name for. It also installs the redaction filter (jarvis.redact) on the log
+handlers here, at the one place logging is configured, so doc 04's rule about
+credentials never reaching a log file is enforced for the whole process rather
+than remembered call site by call site - including the menu bar's own copy of
+the transcript, which is on screen and therefore in every screenshot.
+
 Run during development with:
 
     source .venv/bin/activate
@@ -39,6 +47,7 @@ from pathlib import Path
 import rumps
 from AppKit import NSStatusBar
 
+from jarvis import redact, speech
 from jarvis.agent import Agent
 from jarvis.permissions import check_camera, check_microphone
 from jarvis.voice import HOTKEY_NAME, PushToTalk
@@ -55,6 +64,10 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+# Every log line, from every module, goes through this. Installed immediately
+# after basicConfig and before anything else can log (doc 04, point 5).
+redact.install()
+
 logger = logging.getLogger("jarvis.main")
 
 # How long after launch to keep re-checking that the menu bar item is actually
@@ -71,6 +84,7 @@ TRANSCRIPT_UI_POLL_INTERVAL = 0.25
 NO_TRANSCRIPT = "(none yet)"
 NO_REPLY = "(nothing yet)"
 IDLE_STATUS = "idle"
+SPEAKING_STATUS = "speaking"
 
 # Menu items are one line in a dropdown, and Phase 3's tools return whole
 # paragraphs (Claude Code summarizes what it found). Truncate for display only -
@@ -174,7 +188,10 @@ class JarvisApp(rumps.App):
         with self._transcript_lock:
             self._newest_turn += 1
             self._turn.id = self._newest_turn
-            self._latest_transcript = text if text else "(heard nothing)"
+            # Redacted for display: this string ends up in the menu bar, which
+            # is on screen, in screenshots, and in screen recordings. The agent
+            # gets the real text - it has its own, exact redaction (doc 04).
+            self._latest_transcript = redact.redact_secrets(text) if text else "(heard nothing)"
 
         if not text:
             return
@@ -185,8 +202,14 @@ class JarvisApp(rumps.App):
             with self._transcript_lock:
                 if self._is_newest():
                     self._latest_reply = result.reply or self._describe_actions(result)
+                    spoken = self._latest_reply
                 else:
+                    spoken = ""
                     logger.info("dropping a stale reply — you've spoken since.")
+            # Outside the lock: speaking takes seconds, and holding the lock for
+            # it would stall the UI timer and every other turn for that long.
+            if spoken:
+                self._speak(spoken)
         finally:
             # Whatever happened, stop claiming Jarvis is still working on it -
             # a status line stuck on "Claude Code: Read agent.py" is exactly the
@@ -213,6 +236,17 @@ class JarvisApp(rumps.App):
         with self._transcript_lock:
             if self._is_newest():
                 self._latest_status = message or IDLE_STATUS
+
+    def _speak(self, reply: str) -> None:
+        """Read a reply out loud, if this turn is still the newest one.
+
+        Blocks for as long as the sentence takes. That's fine here - this runs
+        on the per-utterance background thread - and jarvis.speech interrupts
+        whatever is mid-sentence when a newer reply arrives, so talking over
+        Jarvis works the way it does with a person.
+        """
+        self.set_status(SPEAKING_STATUS)
+        speech.speak(reply)
 
     @staticmethod
     def _shorten(text: str) -> str:

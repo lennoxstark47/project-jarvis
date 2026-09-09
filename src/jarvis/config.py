@@ -28,12 +28,17 @@ model decides to do it.
 See DEFAULTS below for what each field means and why it's set the way it is;
 a file that only overrides some of them still inherits the rest.
 
+Phase 4 added a `speech` block (which voice reads the replies out) and an
+`actions.login` block (what the login tool is allowed to do).
+
 API keys are deliberately *not* in that file — it's committed-adjacent and
 easy to `cat` into a terminal by accident. They're read from the environment
 first, then from `secrets/api_keys.json` (the `secrets/` directory Phase 0
-created and .gitignore'd). Moving them into the macOS Keychain is Phase 4's
-job (see docs/04-CREDENTIALS_AND_SECURITY.md) — these are Jarvis's own
-service keys, not the user's site credentials that doc is about.
+created and .gitignore'd). Note that Phase 4's Keychain work
+(docs/04-CREDENTIALS_AND_SECURITY.md, jarvis/vault.py) is about the *user's
+site credentials*, not these — Jarvis's own service keys stay here, since a
+launchd-started process reading them must not need a Keychain unlock prompt
+before it can answer anything at all.
 """
 from __future__ import annotations
 
@@ -155,18 +160,66 @@ DEFAULTS: dict[str, Any] = {
             "extra_args": [],
         },
         "browser": {
-            # Playwright engine: chromium, firefox or webkit. Whichever you pick
-            # must have been downloaded: `python3 -m playwright install <name>`.
-            "engine": "chromium",
+            # Which browser Jarvis drives.
+            #
+            # "system-firefox" is *your* Firefox — the one in /Applications, with
+            # your profile, your logins and your extensions — driven through
+            # geckodriver, which is Mozilla's own driver and the only supported
+            # way to automate a stock Firefox build. Selenium fetches the driver
+            # itself on first use, so there's nothing to install by hand.
+            #
+            # "chromium" / "firefox" / "webkit" use Playwright's own downloaded
+            # browsers instead, with a profile under memory/. Self-contained, but
+            # not the browser in your Dock; each must be downloaded first with
+            # `python3 -m playwright install <name>`.
+            #
+            # Note that Playwright *cannot* drive your real Firefox whatever this
+            # says: its Firefox is a patched build speaking a protocol stock
+            # Firefox doesn't implement (verified 2026-09-08).
+            "engine": "system-firefox",
+            # system-firefox only. null finds Firefox in /Applications (including
+            # Developer Edition); set it to the executable inside the .app if
+            # yours lives somewhere else.
+            "binary": None,
+            # system-firefox only. A profile name from Firefox's profiles.ini
+            # ("default", "dev-edition-default"), a full path, or null for
+            # whichever profile Firefox itself opens — which is the one you
+            # actually use, hence the default.
+            #
+            # A profile can only be open in one Firefox at a time, so Jarvis
+            # can't use this one while your own Firefox has it open; it says so
+            # and asks you to quit. Naming a *different* profile here lets the
+            # two run side by side, at the cost of not sharing your logins.
+            "profile": None,
             # False so you can watch it and take over — the whole point of
             # open_portal (vs open_url) is a page Jarvis and you share.
             "headless": False,
             # Per-navigation timeout in seconds.
             "timeout": 30,
-            # Persistent profile: cookies and logins survive restarts, so Phase
-            # 4's login happens once per site rather than every morning. Holds
-            # real session cookies — keep it under memory/, which is gitignored.
+            # Playwright engines only: their persistent profile, one directory
+            # per engine. Cookies and logins survive restarts, so a login happens
+            # once per site rather than every morning. Holds real session
+            # cookies — keep it under memory/, which is gitignored.
             "user_data_dir": "memory/browser",
+        },
+        # Phase 4's login layer — see docs/04-CREDENTIALS_AND_SECURITY.md.
+        # Note what is deliberately *not* here: any credential. Those live in
+        # the macOS Keychain (jarvis/vault.py), never in this file.
+        "login": {
+            # Save a dictated credential to the Keychain, so the same portal
+            # doesn't have to be dictated again next week. false keeps it in
+            # memory for the turn and nowhere else.
+            "remember": True,
+            # Fill the form, then stop and ask before pressing the login button
+            # (doc 04, point 4). This is what catches a mis-transcribed password
+            # before it becomes a failed-login lockout, or a credential typed
+            # into the wrong page. Set false only once you genuinely trust the
+            # whole path — it removes that safety net entirely.
+            "confirm_before_submit": True,
+            # Seconds to wait for the page to settle after submitting, before
+            # reporting what happened (and whether a 2FA code is now being asked
+            # for, which doc 04 point 6 keeps as a human step on purpose).
+            "submit_wait": 8,
         },
         "projects": {
             # Where run_claude_code is allowed to work, and the only folders a
@@ -179,6 +232,40 @@ DEFAULTS: dict[str, Any] = {
             # by name (they're your decision, not the model's) so they may point
             # outside the roots above.
             "aliases": {},
+        },
+    },
+    # Phase 4's output layer (jarvis/speech.py). Same shape as "backends"
+    # above, and for the same reason: which voice speaks is a config change,
+    # not a code change.
+    "speech": {
+        # false makes Jarvis text-only again — the menu bar still shows every
+        # reply. Useful in a room where a talking laptop is unwelcome.
+        "enabled": True,
+        # One of the keys below.
+        "backend": "say",
+        "backends": {
+            # macOS's built-in synthesiser. Free, offline, always installed.
+            # `voice` is any name from `say -v '?'` (Samantha, Daniel, Alex...);
+            # null uses the system voice from System Settings -> Accessibility
+            # -> Spoken Content. `rate` is words per minute; null = default.
+            #
+            # Worth setting. Measured 2026-09-08 on this Mac, synthesising the
+            # one-line reply "Filled in, want me to submit?" (2.0s of audio):
+            # system default 4.8s, Samantha 2.3s, Alex 2.0s, Daniel 1.9s,
+            # Karen 1.8s, Fred 1.4s. That cost lands squarely in the pause after
+            # you stop talking, so naming a voice roughly halves how long Jarvis
+            # takes to answer. A name that isn't installed falls back to the
+            # system voice rather than to silence (jarvis/speech.py).
+            "say": {"voice": None, "rate": None},
+            # Local neural TTS — much better than `say`, and still offline.
+            # Needs `pip install piper-tts` plus a downloaded .onnx voice.
+            # length_scale > 1 speaks slower, < 1 faster.
+            "piper": {"binary": "piper", "model": None, "length_scale": None},
+            # The cloud option: best quality, costs money per utterance, and
+            # sends the text of Jarvis's replies to OpenAI. Credentials never
+            # reach it — doc 04 keeps those local — but a reply can quote a
+            # page Jarvis is looking at, so this is a real decision.
+            "openai": {"model": "gpt-4o-mini-tts", "voice": "alloy", "timeout": 30},
         },
     },
 }
@@ -237,6 +324,15 @@ def actions_config(name: str) -> dict[str, Any]:
     the next restart.
     """
     return load_config().get("actions", {}).get(name, {})
+
+
+def speech_config() -> dict[str, Any]:
+    """The `speech` block — which voice speaks Jarvis's replies (jarvis/speech.py).
+
+    Read on every call, like actions_config: switching voice or muting Jarvis
+    should take effect on the next reply, not the next restart.
+    """
+    return load_config().get("speech", DEFAULTS["speech"])
 
 
 def default_backend() -> str:

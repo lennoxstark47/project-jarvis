@@ -27,3 +27,23 @@ openai>=1.0.0
 # The Claude Code sub-agent (jarvis/claude_code.py) needs no package at all -
 # it shells out to the `claude` CLI, which is installed independently.
 playwright>=1.40
+
+# Phase 4 - voice out + credentialed login. `keyring` is the Credential Vault
+# (jarvis/vault.py): a thin wrapper over the same macOS Security framework the
+# `security` CLI uses, so site logins live in the OS Keychain rather than in any
+# file Jarvis owns (docs/04-CREDENTIALS_AND_SECURITY.md, point 3).
+keyring>=25.0
+
+# Text-to-speech needs no package for the default voice - jarvis/speech.py's
+# "say" backend shells out to macOS's built-in synthesiser. The other two are
+# opt-in and installed separately if you want them:
+#     pip install piper-tts     # local neural voice; also needs a .onnx model
+#     (the "openai" voice uses the openai package already listed above)
+
+# Phase 4 (round 4) - driving the *real* Firefox. Playwright cannot: its Firefox
+# is a patched build speaking a protocol stock Firefox doesn't implement, so
+# pointing it at /Applications/Firefox.app fails to launch. geckodriver is
+# Mozilla's own driver and the supported way, and Selenium fetches geckodriver
+# itself on first use (Selenium Manager) - nothing to `brew install`.
+# See actions.browser.engine in config/jarvis.json.
+selenium>=4.20

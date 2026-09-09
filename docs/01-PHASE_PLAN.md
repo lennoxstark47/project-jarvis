@@ -151,6 +151,9 @@ flags: a safety property nobody measured is a safety property you don't have.
 - `fill_login_form` tool: Playwright locates the username/password fields on the
   already-opened portal and types the captured credential, then pauses for you to
   confirm/submit (don't auto-submit until you trust it).
+  - *Built 2026-09-08 as `jarvis/confirm.py`, a general armed-action-plus-answer
+    module rather than a pause inside the login tool.* Same behaviour, and it is
+    the seam Phase 5 plugs into — see that phase's note below.
 
 **Definition of done:** "open this portal, username is jsmith, password is..." logs
 you into a real test site, out loud, without you touching the keyboard, and with
@@ -170,6 +173,11 @@ the credential never appearing in a log file.
 - Gestures map to the *same* tool-calling contract as voice (a gesture is just
   another way to trigger `confirm`, `cancel`, etc.), so the brain doesn't need a
   separate code path per input modality.
+  - *Phase 4 already built that contract:* `jarvis.confirm` holds one armed
+    action and `resolve(True/False)` runs or drops it, which is what a spoken
+    "yes" goes through today. A thumbs-up is `confirm.resolve(True)` and needs
+    to know nothing about what it confirmed. Phase 5's work is the perception
+    half (MediaPipe → a stable gesture), not the plumbing.
 
 **Definition of done:** thumbs-up reliably confirms a pending action, in normal
 room lighting, without false triggers during a 10-minute session.

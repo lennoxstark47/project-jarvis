@@ -531,8 +531,11 @@ followup.clear()
 print("\njarvis.tools — dispatch, dry runs and bad arguments")
 
 check(
-    "all four Phase 2+3 tools are declared",
-    tools.TOOL_NAMES == ["open_url", "open_app", "run_claude_code", "open_portal"],
+    "the Phase 2+3 tools are all still declared",
+    # Not an equality check any more: Phase 4 added fill_login_form, and this
+    # file's job is that Phase 3's tools survived, not that the list froze.
+    set(tools.TOOL_NAMES)
+    >= {"open_url", "open_app", "run_claude_code", "open_portal"},
     str(tools.TOOL_NAMES),
 )
 check(
@@ -542,8 +545,16 @@ check(
 )
 check(
     "every tool spec is complete",
+    # A spec needs a description and parameters. It does *not* need a required
+    # argument: Phase 4's fill_login_form deliberately has none, because Jarvis
+    # can work out the site and the credential itself and a required argument
+    # the model can't supply just costs a wasted round-trip. What is worth
+    # checking is that nothing is listed as required without being declared —
+    # that one is a typo, and it makes a backend reject the whole tool list.
     all(
-        spec["description"] and spec["parameters"]["required"] and spec["parameters"]["properties"]
+        spec["description"]
+        and spec["parameters"]["properties"]
+        and set(spec["parameters"]["required"]) <= set(spec["parameters"]["properties"])
         for spec in tools.TOOL_SPECS
     ),
 )
