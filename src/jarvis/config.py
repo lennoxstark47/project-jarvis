@@ -29,7 +29,8 @@ See DEFAULTS below for what each field means and why it's set the way it is;
 a file that only overrides some of them still inherits the rest.
 
 Phase 4 added a `speech` block (which voice reads the replies out) and an
-`actions.login` block (what the login tool is allowed to do).
+`actions.login` block (what the login tool is allowed to do). Phase 5 added a
+`gestures` block (when the camera is on, and how sure a gesture has to be).
 
 Phase 5 added an **environment layer** on top of that file, so switching brains
 is a one-line edit rather than a JSON surgery: `.env` in the project root (or
@@ -304,6 +305,80 @@ DEFAULTS: dict[str, Any] = {
             "openai": {"model": "gpt-4o-mini-tts", "voice": "alloy", "timeout": 30},
         },
     },
+    # Phase 5's second input channel (jarvis/gestures.py). A gesture doesn't get
+    # its own tool or its own branch in the agent loop — it resolves the same
+    # pending action a spoken "yes" resolves, so everything here is about
+    # *perception*: when the camera is on, and how sure Jarvis has to be.
+    "gestures": {
+        # false leaves Jarvis voice-only and never opens the camera at all.
+        "enabled": True,
+        # Open the camera only while something is waiting to be confirmed
+        # (doc 02: "don't leave the camera hot all the time — both for battery
+        # and for the obvious trust reasons"). It also does most of the work of
+        # the phase's "no false triggers" requirement: with nothing armed there
+        # is nothing a gesture could trigger. true is the strongly recommended
+        # setting; false watches continuously, which costs a permanently lit
+        # camera light for the ability to gesture before being asked.
+        "only_when_pending": True,
+        # Which camera. 0 is the built-in one — same index permissions.py uses.
+        "camera_index": 0,
+        # What to ask the camera for. This Mac's webcam defaults to 1920x1080,
+        # which is a lot of pixels to move per frame for a model that downsizes
+        # internally anyway; 640x480 is plenty to see a hand and much cheaper.
+        # null for either leaves the camera on its own default.
+        "frame_width": 640,
+        "frame_height": 480,
+        # Frames per second to classify. 10 is plenty for a held gesture and
+        # leaves the CPU alone; the recogniser itself runs in a few ms.
+        "fps": 10,
+        # How many consecutive frames the same gesture must hold before it
+        # counts, and the main false-trigger knob.
+        #
+        # 12 (~1.2s at 10 fps), raised from the 6 this shipped with for half an
+        # hour: a soak run on 2026-09-09 fired a false "cancel" 46 seconds in,
+        # with nobody gesturing deliberately. That is what 0.6s buys you — an
+        # open palm is the most common *incidental* hand shape in front of a
+        # laptop (a hand resting, a hand near a face), and holding one still
+        # for six frames happens by accident all the time. Holding it for
+        # 1.2s much less so, while a deliberate gesture is easy to hold that
+        # long once you know that's the deal.
+        #
+        # NOT yet re-validated by a full 10-minute soak — see the tracker's
+        # Phase 5 notes. If false triggers persist, raise this before touching
+        # min_confidence: a longer hold costs a little patience, while a higher
+        # floor can make a gesture unfirable outright (see below).
+        "hold_frames": 12,
+        # Minimum classifier confidence for a *named* gesture to count at all
+        # (MediaPipe's own "None" category is ignored whatever it scores).
+        #
+        # 0.5, and measured rather than guessed: on MediaPipe's own reference
+        # photos this classifier scores a clear thumbs-up at 0.73-0.74 and a
+        # clear open palm at 0.60. A 0.7 floor — the first value tried here —
+        # would therefore have made "cancel" essentially unfirable while
+        # looking perfectly reasonable in the config file. Stability comes from
+        # hold_frames below, not from demanding a high per-frame score.
+        "min_confidence": 0.5,
+        # After a gesture fires, ignore everything for this long — your hand
+        # travels through other shapes on its way down.
+        "cooldown_seconds": 2.0,
+        # MediaPipe's own hand-detection threshold, and how many hands to
+        # consider. Two hands doing different things is an ambiguity with no
+        # right answer, so: one.
+        "min_detection_confidence": 0.5,
+        "num_hands": 1,
+        # Gesture -> what it means. Keys must be MediaPipe's own labels:
+        # None, Closed_Fist, Open_Palm, Pointing_Up, Thumb_Down, Thumb_Up,
+        # Victory, ILoveYou (a typo is warned about, not silently ignored).
+        # Values go to jarvis.confirm: "confirm" presses the button, "cancel"
+        # drops the action. Deliberately two entries — the phase plan's own
+        # rule is to resist supporting many gestures before the few work.
+        # Thumb_Down is *not* bound to cancel on purpose: an open palm is the
+        # universal "stop" and is far easier to hold steadily.
+        "bindings": {
+            "Thumb_Up": "confirm",
+            "Open_Palm": "cancel",
+        },
+    },
 }
 
 # --- the environment layer ---------------------------------------------------
@@ -328,6 +403,11 @@ ENV_OVERRIDES: dict[str, str] = {
     "JARVIS_SPEECH_BACKEND": "speech.backend",
     "JARVIS_SPEECH_VOICE": "speech.backends.say.voice",
     "JARVIS_ALLOW_EDITS": "actions.claude_code.allow_edits",
+    "JARVIS_GESTURES_ENABLED": "gestures.enabled",
+    "JARVIS_GESTURES_CAMERA_INDEX": "gestures.camera_index",
+    "JARVIS_GESTURES_HOLD_FRAMES": "gestures.hold_frames",
+    "JARVIS_GESTURES_MIN_CONFIDENCE": "gestures.min_confidence",
+    "JARVIS_GESTURES_ONLY_WHEN_PENDING": "gestures.only_when_pending",
 }
 
 for _name, _entry in DEFAULTS["backends"].items():
@@ -516,6 +596,16 @@ def speech_config() -> dict[str, Any]:
     should take effect on the next reply, not the next restart.
     """
     return load_config().get("speech", DEFAULTS["speech"])
+
+
+def gestures_config() -> dict[str, Any]:
+    """The `gestures` block — the webcam input channel (jarvis/gestures.py).
+
+    Read on every call, like actions_config and speech_config: turning gestures
+    off, or loosening `hold_frames` after a false trigger, should take effect on
+    the next confirmation rather than the next restart.
+    """
+    return load_config().get("gestures", DEFAULTS["gestures"])
 
 
 def default_backend() -> str:

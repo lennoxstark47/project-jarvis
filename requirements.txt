@@ -1,6 +1,11 @@
 rumps>=0.4.0
 sounddevice>=0.4.6
-opencv-python>=4.9.0
+# opencv-*contrib*-python, not plain opencv-python: mediapipe depends on the
+# contrib build, and both distributions install the same `cv2` package, so
+# having both means whichever pip touched last wins. Kept on the 4.x line
+# deliberately - opencv-contrib-python 5.x requires numpy>=2, which would
+# undo the pin below. contrib is a superset, so nothing is lost.
+opencv-contrib-python>=4.9.0,<5
 # Pinned below 2.0: numpy 2.5.2 (built against Apple's Accelerate framework)
 # crashed on a bare `import numpy` with "Symbol not found:
 # _cblas_caxpy$NEWLAPACK$ILP64" on this machine's macOS build - see
@@ -47,3 +52,21 @@ keyring>=25.0
 # itself on first use (Selenium Manager) - nothing to `brew install`.
 # See actions.browser.engine in config/jarvis.json.
 selenium>=4.20
+
+# Phase 5 - hand gestures (jarvis/gestures.py). Pinned to the 0.10 line, and
+# this pin is load-bearing on macOS: mediapipe 1.0.1 cannot run any hand graph
+# in Python on macOS/arm64. Both GestureRecognizer and HandLandmarker abort the
+# whole process inside TensorsToDetectionsCalculator::Open() with
+# "graph_service.h:139 Check failed: service_ Service is unavailable" - a Metal
+# helper the CPU graph never registers, and asking for Delegate.CPU explicitly
+# doesn't avoid it (measured 2026-09-09). It's an abort, not an exception, so
+# no try/except can contain it: Jarvis would simply die when you gestured.
+# 0.10.35 runs the identical code correctly.
+#
+# 1.0.1 also drags in opencv-contrib-python 5.x and therefore numpy>=2, against
+# the numpy<2 pin above; 0.10.35 is happy on numpy 1.26.4.
+#
+# The gesture model itself (~8 MB) is NOT a pip package - jarvis/gestures.py
+# downloads it to memory/models/ on first use, the same way Phase 1 fetches the
+# Whisper weights.
+mediapipe>=0.10.35,<1

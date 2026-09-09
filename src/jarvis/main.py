@@ -30,6 +30,14 @@ credentials never reaching a log file is enforced for the whole process rather
 than remembered call site by call site - including the menu bar's own copy of
 the transcript, which is on screen and therefore in every screenshot.
 
+Phase 5 adds the webcam as a second input channel (jarvis.gestures). A thumbs-up
+confirms whatever Jarvis last asked about and an open palm cancels it, through
+the *same* jarvis.confirm door a spoken "yes" goes through - so there is still
+no if-this-was-voice branch anywhere, which is what doc 02's diagram promised.
+The camera is opened only while something is actually waiting to be confirmed
+(see _sync_gesture_watcher), so its light is on for a bounded window that always
+corresponds to a question you were just asked out loud.
+
 Run during development with:
 
     source .venv/bin/activate
@@ -47,7 +55,7 @@ from pathlib import Path
 import rumps
 from AppKit import NSStatusBar
 
-from jarvis import redact, speech
+from jarvis import config, confirm, gestures, redact, speech
 from jarvis.agent import Agent
 from jarvis.permissions import check_camera, check_microphone
 from jarvis.voice import HOTKEY_NAME, PushToTalk
@@ -86,6 +94,14 @@ NO_REPLY = "(nothing yet)"
 IDLE_STATUS = "idle"
 SPEAKING_STATUS = "speaking"
 
+# The gesture channel's own line in the menu bar. Not decoration: the camera
+# being on is exactly the kind of thing a person is entitled to see stated
+# plainly, and "watching" versus "off" is also the difference between a gesture
+# that can work and one that cannot.
+GESTURES_OFF = "off"
+GESTURES_WATCHING = "watching (camera on)"
+GESTURES_DISABLED = "disabled in config"
+
 # Menu items are one line in a dropdown, and Phase 3's tools return whole
 # paragraphs (Claude Code summarizes what it found). Truncate for display only -
 # logs/jarvis.log keeps the full text.
@@ -98,12 +114,14 @@ class JarvisApp(rumps.App):
         self.transcript_item = rumps.MenuItem(f"Last transcript: {NO_TRANSCRIPT}")
         self.reply_item = rumps.MenuItem(f"Jarvis: {NO_REPLY}")
         self.status_item = rumps.MenuItem(f"Status: {IDLE_STATUS}")
+        self.gesture_item = rumps.MenuItem(f"Gestures: {GESTURES_OFF}")
         self.menu = [
             "Check Permissions",
             f"Hold {HOTKEY_NAME.upper()} to talk",
             self.transcript_item,
             self.reply_item,
             self.status_item,
+            self.gesture_item,
         ]
         self._status_item_elapsed = 0.0
         self._status_item_ever_on_screen = False
@@ -122,6 +140,8 @@ class JarvisApp(rumps.App):
         self._displayed_reply = NO_REPLY
         self._latest_status = IDLE_STATUS
         self._displayed_status = IDLE_STATUS
+        self._latest_gesture_state = GESTURES_OFF
+        self._displayed_gesture_state = GESTURES_OFF
 
         # Each utterance is handled on its own thread (jarvis.voice spawns one
         # per hotkey release), so two can be in flight at once and they do not
@@ -139,6 +159,10 @@ class JarvisApp(rumps.App):
         # key) lazily, so a missing key surfaces as a spoken-style error on the
         # first command rather than a crash at launch.
         self.agent = Agent(on_status=self.set_status)
+
+        # Phase 5's second input channel. Constructed here but the camera stays
+        # shut until something is armed - see _sync_gesture_watcher.
+        self.gesture_watcher = gestures.GestureWatcher(on_gesture=self.handle_gesture)
 
     # -- permission check ---------------------------------------------------
 
@@ -248,6 +272,81 @@ class JarvisApp(rumps.App):
         self.set_status(SPEAKING_STATUS)
         speech.speak(reply)
 
+    # -- gestures -----------------------------------------------------------
+
+    def handle_gesture(self, meaning: str) -> None:
+        """Called from the gesture thread when a held gesture fires.
+
+        `meaning` is "confirm" or "cancel" (config's `gestures.bindings`), and
+        this method is deliberately almost empty: it hands straight to
+        jarvis.confirm, which is the same call a spoken "yes" makes. Nothing
+        here knows what was being confirmed, which is precisely doc 02's
+        promise about gesture-mapped meta-actions reusing the voice contract.
+
+        A gesture is a turn like any utterance, so it takes a turn number: it
+        should be able to overtake a stale reply, and be overtaken by whatever
+        you say next.
+        """
+        with self._transcript_lock:
+            self._newest_turn += 1
+            self._turn.id = self._newest_turn
+            self._latest_transcript = f"(gesture: {meaning})"
+
+        reply = confirm.resolve(meaning == "confirm")
+        if reply is None:
+            # Nothing was armed any more - it expired, or a spoken answer got
+            # there first. Say nothing rather than narrating a non-event.
+            logger.info("gesture %r had nothing left to resolve", meaning)
+            return
+
+        logger.info("gesture %r resolved a pending action: %s", meaning, reply)
+        with self._transcript_lock:
+            if self._is_newest():
+                self._latest_reply = reply
+                spoken = reply
+            else:
+                spoken = ""
+        if spoken:
+            self._speak(spoken)
+        self.set_status(IDLE_STATUS)
+
+    def _sync_gesture_watcher(self) -> None:
+        """Turn the camera on while something is pending, and off again after.
+
+        doc 02: the webcam is "opened only while gesture mode is active - don't
+        leave the camera hot all the time, both for battery and for the obvious
+        trust reasons". This is that rule, and the pending confirmation is what
+        defines "active": Jarvis has just asked you something out loud, so a
+        thumbs-up in the next couple of minutes is unambiguously an answer to
+        it. Outside that window there is nothing a gesture could resolve even
+        if one were seen, so watching would be all cost and no benefit.
+
+        Called from the same main-thread UI timer that refreshes the menu bar -
+        start() and stop() are both cheap and idempotent, and the actual camera
+        work happens on the watcher's own thread.
+        """
+        settings = config.gestures_config()
+        if not settings.get("enabled", True):
+            self._set_gesture_state(GESTURES_DISABLED)
+            return
+
+        wanted = confirm.peek() is not None or not settings.get("only_when_pending", True)
+        if wanted and not self.gesture_watcher.is_running:
+            self.gesture_watcher.start()
+        elif not wanted and self.gesture_watcher.is_running:
+            self.gesture_watcher.stop()
+
+        if self.gesture_watcher.is_running:
+            self._set_gesture_state(GESTURES_WATCHING)
+        elif self.gesture_watcher.last_error:
+            self._set_gesture_state(f"unavailable - {self.gesture_watcher.last_error}")
+        else:
+            self._set_gesture_state(GESTURES_OFF)
+
+    def _set_gesture_state(self, state: str) -> None:
+        with self._transcript_lock:
+            self._latest_gesture_state = state
+
     @staticmethod
     def _shorten(text: str) -> str:
         text = " ".join((text or "").split())
@@ -261,10 +360,15 @@ class JarvisApp(rumps.App):
         return result.error or NO_REPLY
 
     def _refresh_transcript_ui(self, _timer: rumps.Timer) -> None:
+        # Checked here rather than on its own timer: it's the same "look at
+        # some state, update the menu bar" pass, and a confirmation's window is
+        # 120s, so this poll interval is far finer than it needs to be.
+        self._sync_gesture_watcher()
         with self._transcript_lock:
             text = self._latest_transcript
             reply = self._latest_reply
             status = self._latest_status
+            gesture_state = self._latest_gesture_state
         if text != self._displayed_transcript:
             self._displayed_transcript = text
             self.transcript_item.title = f"Last transcript: {self._shorten(text)}"
@@ -274,6 +378,9 @@ class JarvisApp(rumps.App):
         if status != self._displayed_status:
             self._displayed_status = status
             self.status_item.title = f"Status: {self._shorten(status)}"
+        if gesture_state != self._displayed_gesture_state:
+            self._displayed_gesture_state = gesture_state
+            self.gesture_item.title = f"Gestures: {self._shorten(gesture_state)}"
 
     def _startup_check(self, timer: rumps.Timer) -> None:
         """Run the startup permission check once, from inside the run loop.
@@ -286,6 +393,12 @@ class JarvisApp(rumps.App):
         """
         timer.stop()
         self.run_permission_check()
+        # Pay the gesture model's one-off load now rather than inside the first
+        # confirmation window. On its own thread: it takes about a second, and
+        # this runs on the main thread, where a second is a frozen menu bar.
+        threading.Thread(
+            target=self.gesture_watcher.warm_up, name="jarvis-gesture-warmup", daemon=True
+        ).start()
 
     # -- menu bar item watchdog ---------------------------------------------
 

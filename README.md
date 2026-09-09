@@ -31,13 +31,20 @@ push-to-talk voice capture with local Whisper transcription, a model-agnostic br
 that turns a transcript into a tool call, and an action layer that opens apps and
 URLs, drives its own browser, and hands coding tasks to Claude Code as a sub-agent.
 
+Phase 5 (hand gestures) is built and **paused on purpose**: a thumbs-up confirms
+whatever Jarvis just asked about and an open palm cancels it, through the same
+`jarvis.confirm` door a spoken "yes" goes through, with the camera on only while
+something is actually waiting to be confirmed. Two verification runs are left, both
+needing a hand in front of a lens. Focus is back on the voice path, which has the
+older open items — see the tracker.
+
 Phase 4 is built: Jarvis speaks its replies, and a username/password said out loud
 is lifted out of the transcript locally, typed into a real login form in *your* own
 Firefox, and saved to the macOS Keychain once the site accepts it — with the model
 never seeing the characters and nothing submitting the form until you say so. One
 item is carried forward: the four-turn spoken login has never completed start to
 finish from the microphone, blocked by the loop having no memory between utterances
-(Phase 6). See the tracker. Phase 5 (hand gestures) is next.
+(Phase 6). See the tracker. 
 
 `docs/00-IMPLEMENTATION_TRACKER.md` is the authoritative, per-task version of this
 — including what's been proven live versus only written.

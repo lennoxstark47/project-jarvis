@@ -182,6 +182,37 @@ the credential never appearing in a log file.
 **Definition of done:** thumbs-up reliably confirms a pending action, in normal
 room lighting, without false triggers during a 10-minute session.
 
+**Built 2026-09-09 — three notes on what the plan didn't anticipate.**
+
+*No landmark geometry was written.* The bullet above says MediaPipe Hands "for
+landmark detection", implying Jarvis would decide what a thumbs-up is from 21
+points. It doesn't need to: MediaPipe's Tasks API ships a canned classifier
+whose labels are already this vocabulary, and it reports a confidence — which
+is what tells a held gesture from a hand passing through the shape. Doc 02's
+matching bullet is revised too. **Pin mediapipe to the 0.10 line**: 1.0.x
+aborts the whole process on any hand graph on macOS/arm64 (requirements.txt
+carries the detail).
+
+*"Gesture mode is active" got an exact definition: while a confirmation is
+pending.* Doc 02 asks for the camera to be open only then, without saying when
+"then" is. Tying it to an armed `jarvis.confirm` action means the camera light
+is on only in a window that always corresponds to a question Jarvis just asked
+out loud — and it disposes of most of the false-trigger requirement, because
+for the majority of a session there is nothing a gesture could resolve.
+
+*The plan's prediction about the plumbing was right.* "Phase 5's work is the
+perception half, not the plumbing" — no file from Phases 1-4 changed. The
+gesture handler calls `confirm.resolve()`, the same call a spoken "yes" makes,
+and knows nothing about what it confirmed.
+
+**And one correction to the Definition of done's own difficulty.** "Without
+false triggers" is the hard half, not "thumbs-up confirms". At the first
+settings tried (a 0.6s hold) a soak fired a false *cancel* inside a minute,
+because an open palm is the most common incidental hand shape in front of a
+laptop. The hold is now ~1.2s. Judge the two failure directions separately: a
+false *cancel* drops a pending action and Jarvis asks again; a false *confirm*
+submits a login form.
+
 ---
 
 ## Phase 6 — Memory & personalization

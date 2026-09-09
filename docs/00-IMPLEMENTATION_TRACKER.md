@@ -8,10 +8,21 @@ harder/easier than expected). Tasks map 1:1 to the bullets and "Definition of
 done" in `01-PHASE_PLAN.md` — if you add a task here that isn't in that doc, add
 it there too so the two stay in sync.
 
-**Current focus:** Phase 5 — hand gestures. Phase 4 is ✅ Done apart from one carried-forward
-item: the four-turn spoken login has never completed *from the microphone*, blocked by
-conversation memory (Phase 6), not by anything in Phase 4. See Phase 4's "Where Phase 4
-actually stands" note before re-testing it.
+**Current focus: the voice path, not gestures.** Decided 2026-09-09, by you: *"we will
+work on the hand gestures later on, right now lot of things are left for voice command
+itself."* Phase 5 is **paused at 🔶 In progress** with everything built and its two
+remaining checks written down — it is picked up again by running the numbered list in
+its own section, not by re-reading this one.
+
+What that leaves open on the voice side, in the order the docs already argue for:
+- Phase 4's carried-forward item — the four-turn spoken login has never completed *from
+  the microphone*. See "Where Phase 4 actually stands".
+- Phase 6 (memory), which is what actually unblocks it: each utterance is still a fresh
+  conversation, so nothing tells the model a login is already in progress, and a URL
+  said out loud still has to survive being reassembled by Whisper and a small model
+  rather than being remembered as an alias.
+
+Phase 4 is otherwise ✅ Done, and Phase 5 does not depend on it.
 
 **Status legend:** ☐ not started · 🔶 in progress · ✅ done · 🚫 blocked
 
@@ -1330,15 +1341,162 @@ box then. `.venv/bin/python3 run.py`, hold F9 for each:
 ---
 
 ## Phase 5 — Hand gestures
-Status: ☐ Not started
+Status: 🔶 In progress — **paused 2026-09-09, deliberately**, with the code built and
+working. Your call, and a reasonable one: the voice path is the product, and it still
+has open items (see "Current focus"), whereas gestures are a second input channel for a
+confirmation step that already works by voice. Nothing here is half-finished or left in
+a state that rots — what remains is two *verification* runs, both of which need a person
+in front of a camera and are written out step by step at the end of this section.
 
-- ☐ MediaPipe Hands wired to webcam feed
-- ☐ Gesture vocabulary defined (start small: confirm / cancel)
-- ☐ Gestures mapped into the same tool-calling contract as voice
-- **Definition of done:** thumbs-up reliably confirms a pending action, no false triggers over 10 min
+**To resume, cold, from this line alone:** run steps 4 and 5 of "How to test Phase 5"
+below. If both pass, flip this to ✅ Done. If the soak fires anything, raise
+`gestures.hold_frames` in `config/jarvis.json` before touching `min_confidence`, and see
+the false-trigger note for why that order.
 
-Notes:
-- _(none yet)_
+- ✅ MediaPipe wired to the webcam feed — `src/jarvis/gestures.py`, **proven live**
+  (camera opens, frames classify at ~86 ms each, real hands recognised)
+- ✅ Gesture vocabulary defined (thumbs-up = confirm, open palm = cancel) —
+  `gestures.bindings` in `config/jarvis.json`
+- ✅ Gestures mapped into the same contract as voice — a gesture calls
+  `confirm.resolve()`, the identical call a spoken "yes" makes; no new tool, no branch
+  in the agent loop
+- ✅ Camera on only while something is pending — `main.py._sync_gesture_watcher`,
+  **proven live** (`try_gestures.py --wiring`)
+- ☐ **Definition of done, half 1:** a thumbs-up reliably confirms a pending action —
+  needs a hand in front of the camera, so it needs **you** (`--confirm`, below).
+  *Deferred 2026-09-09, not blocked.*
+- 🔶 **Definition of done, half 2:** no false triggers over 10 minutes — **one false
+  trigger measured** at the original settings, the fix is in, the re-run is outstanding.
+  *Deferred 2026-09-09, not blocked.*
+
+Notes (2026-09-09):
+
+**What was built:**
+- `src/jarvis/gestures.py` — the perception layer, in two halves that are deliberately
+  separable. `Stabilizer` is pure logic over a stream of `(label, score)` readings and
+  is where a false trigger is prevented or allowed; `GestureWatcher` is the camera loop
+  that feeds it. The split is what makes 53 offline checks possible with no camera, no
+  model file and no hand.
+- `config/jarvis.json` — a `gestures` block (enabled, only_when_pending, camera_index,
+  frame size, fps, hold_frames, min_confidence, cooldown, bindings), plus
+  `JARVIS_GESTURES_*` env overrides on the same layering the 2026-09-09 backend note
+  describes.
+- `src/jarvis/main.py` — a `Gestures:` menu bar line and the start/stop rule. The line
+  is not decoration: "watching (camera on)" versus "off" is the one thing a person is
+  entitled to see stated plainly, and it's also how a broken camera is told apart from
+  a session where nobody gestured.
+- `scripts/selftest_gestures.py` (53 offline checks) and `scripts/try_gestures.py`
+  (`--check`, `--watch`, `--confirm`, `--soak`, `--wiring`).
+
+**Phase 4 paid for most of this, exactly as it predicted.** `jarvis.confirm` holds a
+*callable*, so `handle_gesture` is nine lines and knows nothing about logins: it calls
+`confirm.resolve(meaning == "confirm")` and speaks whatever comes back. Doc 02's claim
+that gestures would plug in "without touching Phases 1-4" held — no file from those
+phases changed to make this work, only `main.py`, which is the wiring.
+
+**"Only while gesture mode is active" turned out to have an exact meaning already in
+the design: while a confirmation is pending.** Jarvis has just asked you something out
+loud, so a thumbs-up in the next two minutes is unambiguously an answer to it; outside
+that window there is nothing a gesture could resolve even if one were seen. So the
+camera light is on only in a window that always corresponds to a spoken question — and
+that is also most of the "no false triggers" requirement for free, since for the
+majority of a session nothing is armed. Recorded in doc 02 rather than only here.
+
+**⚠ The mediapipe version pin is load-bearing, and the failure is a process abort.**
+`mediapipe 1.0.1` (the current release) **cannot run any hand graph in Python on
+macOS/arm64**. `GestureRecognizer` and `HandLandmarker` both abort inside
+`TensorsToDetectionsCalculator::Open()` with `graph_service.h:139 Check failed:
+service_ Service is unavailable` — a Metal helper the CPU graph never registers, and
+asking for `BaseOptions.Delegate.CPU` explicitly does not avoid it. Being an abort
+rather than an exception, no `try`/`except` can contain it: Jarvis would simply die,
+mid-sentence, the first time you gestured. `0.10.35` runs the identical code correctly
+and is pinned in `requirements.txt` with this reason next to it.
+
+**A dependency near-miss worth recording, because the fix was to *not* take the
+upgrade.** `pip install mediapipe` pulled `opencv-contrib-python 5.x`, which requires
+`numpy>=2` — straight through Phase 1's documented `numpy<2` pin, the one guarding
+against the Accelerate `_cblas_caxpy$NEWLAPACK$ILP64` crash. Rather than lift a pin
+that a previous phase put there for a measured reason, `opencv-contrib-python` is
+pinned to the 4.x line, which is happy on numpy 1.26.4. Verified afterwards: mic,
+camera, faster-whisper's decode path and all three older self-tests still pass.
+(Incidentally, numpy 2.5.3 *does* import fine on this machine today, where 2.5.2
+didn't in Phase 1 — but "it doesn't crash today" is not a reason to undo a pin, and
+nothing needed it.)
+
+**Also worth knowing: two OpenCV distributions in one venv is a trap.** `opencv-python`
+and `opencv-contrib-python` both install a `cv2` package over each other, so which one
+you get depends on which pip touched last. `requirements.txt` now names only the
+contrib build (mediapipe's own dependency, and a superset).
+
+**Measured, on this Mac:**
+
+| | |
+|---|---|
+| camera open | **2.30s** — the dominant cost, and not pre-payable |
+| gesture model load | **0.97s** first time in a process, **0.02s** after (TFLite caches it) |
+| classification | **86 ms/frame**, so ~11 fps is the ceiling; `fps: 10` sits just under it |
+| `Thumb_Up` confidence | **0.73-0.74** on MediaPipe's own reference photos |
+| `Open_Palm` confidence | **0.60**, same source |
+
+Those last two changed a default before it ever ran: `min_confidence` started at 0.7,
+which would have made **cancel unfirable** while looking entirely reasonable in the
+config file. It is 0.5, and stability comes from the hold, not from demanding a high
+per-frame score. The 2.3s camera open needs no fix either: the watcher starts when the
+confirmation is armed, which is *before* Jarvis finishes speaking the question (1.9-4.8s
+by Phase 4's measurements), and nobody answers a question they haven't heard. The 0.97s
+model load is now paid at startup on a background thread (`GestureWatcher.warm_up`).
+
+**⚠ One false trigger, measured — and the fix is not yet validated.** A soak run
+(`--soak`, nothing being gestured deliberately) fired a false **cancel** 46 seconds in.
+That is the Definition of done's second half failing, and it is worth being precise
+about why: an open palm is the most common *incidental* hand shape in front of a
+laptop, and `hold_frames: 6` at 10 fps meant holding one still for **0.6s** was enough.
+Raised to **12** (~1.2s). A deliberate gesture is easy to hold that long; a hand resting
+in frame much less so.
+
+What that fix has **not** had is a clean 10-minute run to prove it, because the soak was
+stopped partway (it turns the webcam on for ten minutes, which is not something to leave
+running unannounced). **This is the one thing standing between Phase 5 and done**, along
+with the thumbs-up half that needs a hand. Note the asymmetry while judging it: a false
+*cancel* drops a pending action and Jarvis asks again, whereas a false *confirm* submits
+a login form — nothing has ever falsely confirmed, but the run that would establish that
+hasn't happened either.
+
+### How to test Phase 5 (do these in order)
+
+1. **Offline, no camera, no model, no hand:**
+   ```
+   .venv/bin/python3 scripts/selftest_gestures.py    # 53 checks, currently all passing
+   ```
+2. **Is the camera side alive?** (opens the camera for a second, classifies one frame)
+   ```
+   .venv/bin/python3 scripts/try_gestures.py --check
+   ```
+3. **Does the app open the camera at the right times?** (no run loop, no second menu
+   bar icon — it drives `JarvisApp`'s gesture plumbing directly)
+   ```
+   .venv/bin/python3 scripts/try_gestures.py --wiring
+   ```
+4. ☐ **Definition of done, half 1 — your hand.** Arms a pretend action and waits:
+   ```
+   .venv/bin/python3 scripts/try_gestures.py --confirm
+   ```
+   Hold a thumbs-up steady for about a second and a half, facing the camera. It should
+   print `gesture said: confirm` and run the armed action. If nothing fires, run
+   `--watch` and hold the same gesture: that prints every frame's label and score, which
+   separates "it never saw a thumbs-up" (a lighting/framing problem) from "it saw one at
+   0.4" (lower `min_confidence`) from "it saw one but you moved" (lower `hold_frames`).
+5. ☐ **Definition of done, half 2 — ten minutes, and don't gesture.**
+   ```
+   .venv/bin/python3 scripts/try_gestures.py --soak 600
+   ```
+   **The webcam is on for the whole ten minutes.** Work normally in front of it. Anything
+   that fires is a false trigger and gets printed with a timestamp. Zero is the bar.
+6. ☐ **Then by voice, the whole thing.** `.venv/bin/python3 run.py` (quit the
+   launchd-started `dist/Jarvis.app` first, or you'll have two Jarvises — the Phase 1
+   mix-up). Run a login until Jarvis asks *"want me to submit?"*, then **don't answer out
+   loud** — give it a thumbs-up. The menu bar's `Gestures:` line should read
+   "watching (camera on)" for exactly that window, and the form should submit.
 
 ---
 

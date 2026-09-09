@@ -74,14 +74,36 @@ theory, Claude-shaped in practice."
   proven in Phase 0 before anything else is built on top of it.
 - **Webcam:** opened only while gesture mode is active (don't leave the camera
   hot all the time — both for battery and for the obvious trust reasons).
+  *Built 2026-09-09:* "gesture mode is active" turned out to have an exact
+  meaning already sitting in the design — **while a confirmation is pending**.
+  Jarvis has just asked you something out loud, so a thumbs-up in the next two
+  minutes is unambiguously an answer to it; outside that window there is
+  nothing a gesture could resolve even if one were seen. The camera light is
+  therefore on only in a window that always corresponds to a question you were
+  just asked, which is also most of Phase 5's "no false triggers" requirement
+  for free. `gestures.only_when_pending` can turn that off (continuous
+  watching) and defaults to on.
 
 ### 2. Perception layer
 - **STT:** local Whisper (`faster-whisper` or `whisper.cpp`). Local because voice
   commands routinely contain credentials, project paths, and other things that
   don't need to leave your machine just to get transcribed.
-- **Gesture detection:** MediaPipe Hands gives you 21 hand landmarks per frame in
-  real time on CPU — plenty for a small fixed gesture vocabulary (Phase 5). No
-  need for a custom-trained model to start.
+- **Gesture detection:** MediaPipe, locally, on CPU, for a small fixed gesture
+  vocabulary (Phase 5). *Revised 2026-09-09, when it was built:* this said "21
+  hand landmarks per frame ... no need for a custom-trained model", and the
+  second half is more true than expected — MediaPipe's Tasks API ships a
+  **canned gesture classifier** whose labels are already the vocabulary this
+  project wants (`Thumb_Up`, `Open_Palm`, `Closed_Fist`, `Pointing_Up`,
+  `Thumb_Down`, `Victory`, `ILoveYou`), so no geometry is hand-rolled over the
+  landmarks at all. That matters beyond saving code: deciding "is this a
+  thumbs-up" from landmark positions is a camera-angle and rotation problem,
+  and a trained classifier also reports a **confidence**, which is what the
+  stability layer needs to tell a deliberate held gesture from a hand passing
+  through the shape. `jarvis/gestures.py` keeps the landmark option open — the
+  recogniser sits behind a two-method interface — but nothing needs it yet.
+  Note the version pin: mediapipe **1.0.x cannot run any hand graph in Python
+  on macOS/arm64** (it aborts the process); the 0.10 line works. See
+  requirements.txt.
 
 ### 3. Orchestrator / Brain
 - **Model Router:** a thin interface — `complete(messages, tools) -> reply | tool_call`
